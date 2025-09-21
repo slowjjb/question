@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>교사 화면</title>
   <style>
-    :root { --bg:#0f172a; --panel:#111827; --muted:#94a3b8; --line:#334155; --brand:#1d4ed8; --ok:#22c55e; --warn:#f59e0b; --danger:#ef4444;}
+    :root { --bg:#0f172a; --panel:#111827; --muted:#94a3b8; --line:#334155; --brand:#1d4ed8; --ok:#22c55e; --warn:#f59e0b; --danger:#ef4444; }
     body{font-family:system-ui,-apple-system,Segoe UI,Roboto,'Noto Sans KR',sans-serif;margin:0;background:var(--bg);color:#fff}
     header{background:var(--brand);padding:12px 16px;display:flex;align-items:center;gap:10px}
     .pill{display:inline-block;background:#172554;border:1px solid #334155;border-radius:999px;padding:6px 10px;font-size:12px;font-weight:700}
@@ -151,7 +151,8 @@
     function genId(len=7){ const C='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s=''; for(let i=0;i<len;i++) s+=C[Math.floor(Math.random()*C.length)]; return s; }
 
     let gameId = localStorage.getItem('q_gameId') || '';
-    let unsubGame=null, unsubList=null, unsubPlayers=null, unsubResp=null;
+    let unsubGame=null, unsubList=null;
+    let unsubPresence=null, unsubNames=null, unsubResp=null; // 구독 분리(충돌 방지)
 
     /* ───────── 템플릿(로컬 저장) ───────── */
     const TPL_KEY = 'q_templates_v1';
@@ -176,7 +177,7 @@
         const id = sel.value;
         if (!id) { $('#tplInfo').textContent='미리보기: -문항'; return; }
         const n = await previewTplCount(id);
-        $('#tplInfo').textContent = `미리보기: ${n ?? '?'}문항`;
+        $('#tplInfo').textContent = `미리보기: ${n ?? '?' }문항`;
       };
       sel.dispatchEvent(new Event('change'));
     }
@@ -192,7 +193,7 @@
       const exist = await dstQ.get();
       if (!exist.empty) {
         let b = db.batch(); let n=0;
-        exist.forEach(d=>{ b.delete(dstQ.doc(d.id)); n++; if(n%400===0){ b.commit(); b=b=db.batch(); } });
+        exist.forEach(d=>{ b.delete(dstQ.doc(d.id)); n++; if(n%400===0){ b.commit(); b=db.batch(); } });
         await b.commit();
       }
 
@@ -209,7 +210,7 @@
       });
       await b.commit();
 
-      // 3) 총 문항/상태 초기화
+      // 3) 총 문항/상태 초기화 (selfPaced 유지)
       await db.collection('q_games').doc(destId).set({
         totalQuestions: snap.size, status:'waiting', currentIndex:-1, questionStartAt: null, selfPaced:true
       }, {merge:true});
@@ -243,14 +244,14 @@
           n++; if (n%400===0){ batch.commit(); batch = db.batch(); }
         });
         await batch.commit();
-      }catch(e){ console.warn('점수 초기화 실패(무시):', e?.message||e); }
+      }catch(e){ console.warn('점수/진행도 초기화 실패(무시):', e?.message||e); }
     }
 
     /* ───────── 플레이어 상태(온라인/완료) 카운트 ───────── */
     function bindPlayerPresence(){
-      if (unsubPlayers) unsubPlayers();
+      if (unsubPresence) unsubPresence();
       const cutoffMs = 40000; // 40초 내 하트비트면 온라인
-      unsubPlayers = db.collection('q_games').doc(gameId)
+      unsubPresence = db.collection('q_games').doc(gameId)
         .collection('q_players')
         .onSnapshot(s=>{
           let online=0, finished=0;
@@ -275,8 +276,8 @@
 
       // 참가자 이름 맵
       const names = {};
-      if (unsubPlayers) unsubPlayers();
-      unsubPlayers = db.collection('q_games').doc(gameId)
+      if (unsubNames) unsubNames();
+      unsubNames = db.collection('q_games').doc(gameId)
         .collection('q_players')
         .onSnapshot(snap=>{
           snap.forEach(d=>{
@@ -285,7 +286,7 @@
           });
         });
 
-      // 응답 합산(개별진행이라 전체 응답을 누적)
+      // 응답 합산(개별진행: 전체 응답 누적)
       if (unsubResp) unsubResp();
       unsubResp = db.collection('q_games').doc(gameId)
         .collection('q_responses')
@@ -390,7 +391,7 @@
         status:'waiting', createdBy:user.uid,
         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
         currentIndex:-1, totalQuestions:0,
-        selfPaced:true,                    // ← 기본값: 개별진행
+        selfPaced:true,                    // 기본값: 개별진행
         questionStartAt: null
       };
       await db.collection('q_games').doc(gameId).set(gameDoc,{merge:true});
@@ -402,7 +403,7 @@
     $('#btnCopy').addEventListener('click', async ()=>{ try{ await navigator.clipboard.writeText(gameId); alert('게임 ID 복사됨'); }catch{ alert('복사 실패'); } });
     $('#btnSignOut').addEventListener('click', async ()=>{ await auth.signOut(); location.replace('./teacher-login.html'); });
 
-    // 시작: 지난 응답 제거 후 시작 + 모든 참가자 진행도 0/미완료로 초기화
+    // 시작: 응답 제거 + 모든 참가자 진행도 0/미완료로 초기화 (점수는 유지)
     $('#btnStart').addEventListener('click', async ()=>{
       if(!gameId) return;
       const gref = db.collection('q_games').doc(gameId);
@@ -428,11 +429,11 @@
       }, {merge:true});
     });
 
-    // 초기화(대기): 응답 비움 + 상태 대기
+    // 초기화(대기): 응답 비움 + 점수/진행도 리셋 + 상태 대기
     $('#btnReset').addEventListener('click', async ()=>{
       if(!confirm('게임을 대기 상태로 초기화할까요? (현재 진행 상황과 응답이 초기화됩니다)')) return;
       await clearResponses(gameId);
-      await resetPlayerScores(gameId); // scoreTotal/진행도 리셋
+      await resetPlayerScores(gameId); // scoreTotal/진행도/완료 리셋
       await db.collection('q_games').doc(gameId).set({
         status:'waiting', currentIndex:-1, questionStartAt: null, selfPaced:true
       }, {merge:true});
@@ -515,7 +516,7 @@
     });
     document.getElementById('tplSelect').addEventListener('change', async ()=>{
       const id=document.getElementById('tplSelect').value; if(!id){ document.getElementById('tplInfo').textContent='미리보기: -문항'; return; }
-      const n = await previewTplCount(id); document.getElementById('tplInfo').textContent = `미리보기: ${n ?? '?'}문항`;
+      const n = await previewTplCount(id); document.getElementById('tplInfo').textContent = `미리보기: ${n ?? '?' }문항`;
     });
 
     // 초기 바인딩
