@@ -197,12 +197,12 @@
 
       // 상단 표기는 '내 진행도'
       if (totalQ>0) $('#gindex').textContent = `${Math.min(myIndex+1,totalQ)}/${totalQ}`;
-      else $('#gindex').textContent = '-';
+      else $('#gindex').textContent = `${myIndex+1}/?`;
 
       if(meFinished){ show('#view-end'); stopTimer(); return; }
 
       // 현재 렌더된 문항과 다르면 내 진행도 기준 렌더
-      if (renderedIndex !== myIndex && totalQ>0){
+      if (renderedIndex !== myIndex){
         renderQuestion(myIndex);
       }
     });
@@ -223,7 +223,7 @@
       // 총 문항 동기화
       totalQ = Number(g.totalQuestions || 0);
       if (totalQ>0) $('#gindex').textContent = `${Math.min(myIndex+1,totalQ)}/${totalQ}`;
-      else $('#gindex').textContent='-';
+      else $('#gindex').textContent=`${myIndex+1}/?`;
 
       // 상태 전이 감지: waiting → running(시작) 혹은 waiting 유지(초기화)
       if (status !== lastGameStatus){
@@ -245,10 +245,7 @@
 
       // running
       if(!meFinished){
-        if (totalQ <= 0){
-          // 문항 수를 아직 못 받았으면 대기 화면 유지
-          show('#view-wait'); stopTimer(); return;
-        }
+        // 총문항을 아직 몰라도 내 진행 기준으로 시도
         if (renderedIndex !== myIndex) renderQuestion(myIndex);
       }
     });
@@ -258,11 +255,11 @@
   let currentQ=null, currentQid=null;
   async function renderQuestion(order){
     try{
-      // 총 문항을 아직 모르거나 0이면 대기
-      if (totalQ <= 0){ show('#view-wait'); stopTimer(); return; }
-
+      // 음수 방지
       if (order < 0) order = 0;
-      if (order >= totalQ){
+
+      // 총문항을 모를 때도, 우선 요청해서 문항이 없으면 완료로 처리
+      if (totalQ > 0 && order >= totalQ){
         await playerDoc.set({ finished:true }, {merge:true});
         meFinished = true;
         show('#view-end'); stopTimer(); return;
@@ -272,10 +269,16 @@
       submitted=false;
       $('#after-msg').style.display='none';
 
-      const qSnap = await questionsCol().where('order','==',order).limit(1).get();
+      console.debug('[render]', {order, totalQ, renderedIndex});
+
+      const qSnap = await questionsCol().where('order','==', Number(order)).limit(1).get();
       if(qSnap.empty){
-        // 문항 컬렉션이 아직 동기화 안 됐을 때는 잠시 대기
-        show('#view-wait'); return;
+        // (A) 총문항을 알고 있고, 아직 세팅 중일 수 있으면 잠시 대기
+        if (totalQ > 0 && order < totalQ) { show('#view-wait'); return; }
+        // (B) 총문항을 모르거나 해당 order 문항이 없으면 완료 처리
+        await playerDoc.set({ finished:true }, {merge:true});
+        meFinished = true;
+        show('#view-end'); stopTimer(); return;
       }
       const qDoc = qSnap.docs[0];
       const q = qDoc.data();
@@ -284,15 +287,15 @@
       renderedIndex = order;
 
       $('#q-title').textContent = `문제 ${order+1}`;
-      $('#q-prompt').textContent = q.prompt;
+      $('#q-prompt').textContent = q.prompt || '';
 
       const box = $('#q-choices'); box.innerHTML='';
       document.querySelectorAll('.choice').forEach(x=>x.classList.remove('active'));
       $('#q-short').style.display='none';
       $('#short-input').value='';
 
-      if(q.type==='mcq'){
-        const ch = q.choices || [];
+      if((q.type||'mcq')==='mcq'){
+        const ch = Array.isArray(q.choices) ? q.choices : [];
         ch.forEach((t,i)=>{
           const label = String.fromCharCode(65+i);
           const div = document.createElement('div');
@@ -348,7 +351,7 @@
     let myAnswer='', isCorrect=false;
     if(timeout){
       myAnswer = '(시간초과)'; isCorrect = false;
-    }else if(currentQ.type==='mcq'){
+    }else if((currentQ.type||'mcq')==='mcq'){
       const act = document.querySelector('.choice.active');
       if(!act){ alert('보기를 선택해 주세요.'); submitted=false; return; }
       myAnswer = act.dataset.val;
@@ -370,7 +373,7 @@
     $('#after-msg').style.display='block';
 
     // 응답 저장 + 점수/진행도 증가 (동일 문항 재제출 방지: create 사용)
-    // rid는 'uid_질문문서ID'로 고유 보장
+    // rid는 'uid_질문문서ID'로 고유 보장 (문서ID 없을 경우 order 사용)
     const rid = `${ME.uid}_${currentQid||renderedIndex}`;
     const nowTs = firebase.firestore.FieldValue.serverTimestamp();
 
@@ -384,7 +387,7 @@
           answer: myAnswer,
           correctAnswer: currentQ.answer || '',
           isCorrect, elapsedSec, penalty, score,
-          type: currentQ.type,
+          type: currentQ.type || 'mcq',
           createdAt: nowTs,
           answeredAt: nowTs,
           submittedAt: nowTs,
@@ -403,15 +406,25 @@
       // 제출 성공 → 로컬 진행도도 즉시 +1 (스냅샷 지연/역행 보호)
       myIndexLocal = Math.max(myIndexLocal, renderedIndex + 1);
       myIndex = myIndexLocal;
+      console.debug('[submit->local+1]', {myIndexLocal, next: myIndexLocal});
     }catch(e){
       console.warn('이미 제출되었거나 일시 오류:', e?.message||e);
+      // 실패해도 UX는 다음으로 시도
+      myIndexLocal = Math.max(myIndexLocal, renderedIndex + 1);
+      myIndex = myIndexLocal;
     }
 
     $('#btnSubmit').disabled = true;
+
+    // UX 즉시 다음 문항 시도 (서버 지연 무시)
+    if (!meFinished) {
+      renderQuestion(myIndexLocal);
+    }
+
+    // 잠시 후 서버 상태 재확인 → 완료면 종료화면
     setTimeout(async ()=>{
       $('#btnSubmit').disabled=false;
 
-      // 완료 여부 체크 (총문항을 알고 있을 때만)
       try{
         const [pSnap, gSnap] = await Promise.all([playerDoc.get(), gameDoc().get()]);
         const px = Math.max(myIndexLocal, Number((pSnap.data()||{}).progressIndex || 0));
