@@ -66,6 +66,7 @@
 
     <div class="row" style="justify-content:flex-end;margin-top:12px">
       <button id="btnSubmit" class="primary">제출</button>
+      <button id="btnNext" class="ghost" style="display:none">다음으로</button>
     </div>
     <div id="after-msg" class="muted" style="margin-top:8px;display:none"></div>
   </div>
@@ -115,11 +116,11 @@
   let unsubGame=null, unsubMe=null, timer=null, submitted=false;
   let totalQ=0, myIndex=0, myIndexLocal=0, meFinished=false, renderedIndex=-1;
 
-  // 교사 리셋/시작 직후엔 서버 진행도 감소도 허용하는 스위치
   let lastGameStatus = '';
   let allowServerDecrease = false;
 
   const TIMEOUT_SEC = 50; // 50초 자동제출
+  const AUTO_ADVANCE_MS = 0; // 자동넘김 비활성(원하면 1200 같은 값으로 설정)
 
   // ── presence heartbeat
   async function startHeartbeat(){
@@ -173,42 +174,37 @@
     }
   });
 
-  // ── 내 진행도/완료 바인딩 (리셋 시 한 번은 감소 허용)
+  // ── 내 진행도/완료 바인딩
   function bindMe(){
     if(unsubMe) unsubMe();
     unsubMe = playerDoc.onSnapshot(s=>{
       const d = s.data() || {};
 
-      // finished는 true면 유지
       if (!meFinished && d.finished === true) meFinished = true;
 
       const serverIdx = Number(d.progressIndex || 0);
       if (allowServerDecrease){
-        // 교사 리셋/시작 직후 1회는 서버값을 신뢰 (감소 허용)
         myIndexLocal = serverIdx;
         allowServerDecrease = false;
       } else if (serverIdx >= myIndexLocal) {
         myIndexLocal = serverIdx;
       } else {
-        // 감소는 무시 (진행도 역행 방지)
         console.warn('서버 진행도 감소 감지 → 무시:', serverIdx, '유지:', myIndexLocal);
       }
       myIndex = myIndexLocal;
 
-      // 상단 표기는 '내 진행도'
       if (totalQ>0) $('#gindex').textContent = `${Math.min(myIndex+1,totalQ)}/${totalQ}`;
       else $('#gindex').textContent = `${myIndex+1}/?`;
 
       if(meFinished){ show('#view-end'); stopTimer(); return; }
 
-      // 현재 렌더된 문항과 다르면 내 진행도 기준 렌더
       if (renderedIndex !== myIndex){
         renderQuestion(myIndex);
       }
     });
   }
 
-  // ── game binding (상태/총문항만 참고)
+  // ── game binding
   function bindGame(){
     if(!gameId){ $('#wait-text').textContent='게임 ID 없음: join 화면에서 다시 입장해 주세요.'; show('#view-wait'); return; }
 
@@ -220,21 +216,17 @@
       const status = g.status || '-';
       $('#gstatus').textContent = status;
 
-      // 총 문항 동기화
       totalQ = Number(g.totalQuestions || 0);
       if (totalQ>0) $('#gindex').textContent = `${Math.min(myIndex+1,totalQ)}/${totalQ}`;
       else $('#gindex').textContent=`${myIndex+1}/?`;
 
-      // 상태 전이 감지: waiting → running(시작) 혹은 waiting 유지(초기화)
       if (status !== lastGameStatus){
         if (status === 'waiting'){
-          // 초기화 구간: 이후 시작 시 서버 진행도 감소 허용
           allowServerDecrease = true;
-          meFinished = false; // 대기 땐 완료 플래그 내림
+          meFinished = false;
           renderedIndex = -1;
           show('#view-wait'); stopTimer();
         } else if (status === 'running' && lastGameStatus === 'waiting'){
-          // 막 시작했다면 서버 progressIndex로 한번 동기
           allowServerDecrease = true;
         }
         lastGameStatus = status;
@@ -243,9 +235,7 @@
       if(status==='waiting'){ show('#view-wait'); stopTimer(); return; }
       if(status==='ended'){ show('#view-end'); stopTimer(); return; }
 
-      // running
       if(!meFinished){
-        // 총문항을 아직 몰라도 내 진행 기준으로 시도
         if (renderedIndex !== myIndex) renderQuestion(myIndex);
       }
     });
@@ -255,10 +245,8 @@
   let currentQ=null, currentQid=null;
   async function renderQuestion(order){
     try{
-      // 음수 방지
       if (order < 0) order = 0;
 
-      // 총문항을 모를 때도, 우선 요청해서 문항이 없으면 완료로 처리
       if (totalQ > 0 && order >= totalQ){
         await playerDoc.set({ finished:true }, {merge:true});
         meFinished = true;
@@ -268,14 +256,11 @@
       stopTimer();
       submitted=false;
       $('#after-msg').style.display='none';
-
-      console.debug('[render]', {order, totalQ, renderedIndex});
+      $('#btnNext').style.display='none';
 
       const qSnap = await questionsCol().where('order','==', Number(order)).limit(1).get();
       if(qSnap.empty){
-        // (A) 총문항을 알고 있고, 아직 세팅 중일 수 있으면 잠시 대기
         if (totalQ > 0 && order < totalQ) { show('#view-wait'); return; }
-        // (B) 총문항을 모르거나 해당 order 문항이 없으면 완료 처리
         await playerDoc.set({ finished:true }, {merge:true});
         meFinished = true;
         show('#view-end'); stopTimer(); return;
@@ -327,13 +312,10 @@
     timer = setInterval(()=>{
       const sec = Math.max(0, (Date.now()-startMs)/1000);
       $('#tm').textContent = sec.toFixed(1);
-
-      // 감점 미리보기(10초부터 시작, 최대 5)
       const pen = Math.min(5, Math.max(0, Math.ceil((sec-10)/10)));
       $('#pen').textContent = pen;
-
       if(!submitted && sec >= TIMEOUT_SEC){
-        doSubmit(true); // timeout
+        doSubmit(true);
       }
     }, 200);
   }
@@ -341,6 +323,10 @@
 
   // 제출
   $('#btnSubmit').addEventListener('click', ()=> doSubmit(false));
+  $('#btnNext').addEventListener('click', ()=>{
+    if (meFinished) return;
+    renderQuestion(myIndexLocal);
+  });
 
   async function doSubmit(timeout){
     if(submitted || !currentQ) return;
@@ -372,8 +358,6 @@
     $('#after-msg').textContent = msg;
     $('#after-msg').style.display='block';
 
-    // 응답 저장 + 점수/진행도 증가 (동일 문항 재제출 방지: create 사용)
-    // rid는 'uid_질문문서ID'로 고유 보장 (문서ID 없을 경우 order 사용)
     const rid = `${ME.uid}_${currentQid||renderedIndex}`;
     const nowTs = firebase.firestore.FieldValue.serverTimestamp();
 
@@ -394,7 +378,6 @@
           submitted: true
         });
 
-        // 점수 누적 + 다음 문항으로(서버)
         tr.set(playerDoc, {
           scoreTotal: firebase.firestore.FieldValue.increment(score),
           progressIndex: firebase.firestore.FieldValue.increment(1),
@@ -403,23 +386,34 @@
         }, {merge:true});
       });
 
-      // 제출 성공 → 로컬 진행도도 즉시 +1 (스냅샷 지연/역행 보호)
+      // 성공한 경우에만 로컬 진행도 +1
       myIndexLocal = Math.max(myIndexLocal, renderedIndex + 1);
       myIndex = myIndexLocal;
-      console.debug('[submit->local+1]', {myIndexLocal, next: myIndexLocal});
+
+      // 다음으로 버튼 표시
+      $('#btnNext').style.display = 'inline-block';
+
+      // 자동넘김을 원하면 아래 지연 사용
+      if (AUTO_ADVANCE_MS > 0) {
+        setTimeout(()=>{ if (!meFinished) renderQuestion(myIndexLocal); }, AUTO_ADVANCE_MS);
+      }
     }catch(e){
-      console.warn('이미 제출되었거나 일시 오류:', e?.message||e);
-      // 실패해도 UX는 다음으로 시도
-      myIndexLocal = Math.max(myIndexLocal, renderedIndex + 1);
-      myIndex = myIndexLocal;
+      console.warn('제출 실패:', e?.code, e?.message||e);
+
+      if (e?.code === 'already-exists' || /ALREADY_EXISTS/i.test(String(e?.message||''))){
+        $('#after-msg').textContent = '이미 제출된 문항입니다. 다음 문항으로 이동하거나 교사에게 문의하세요.';
+        $('#after-msg').style.display='block';
+        // 진행도는 올리지 않음. 사용자가 직접 "다음으로" 눌러 이동 가능(이미 제출된 상태라면 서버 progressIndex가 곧 올라옵니다).
+        $('#btnNext').style.display = 'inline-block';
+      } else {
+        alert('제출에 실패했습니다. 네트워크 상태를 확인한 뒤 다시 시도하세요.');
+        // 실패했으므로 제출 상태 해제하여 다시 제출 가능
+        submitted = false;
+      }
+      return;
     }
 
     $('#btnSubmit').disabled = true;
-
-    // UX 즉시 다음 문항 시도 (서버 지연 무시)
-    if (!meFinished) {
-      renderQuestion(myIndexLocal);
-    }
 
     // 잠시 후 서버 상태 재확인 → 완료면 종료화면
     setTimeout(async ()=>{
@@ -435,10 +429,7 @@
           show('#view-end'); stopTimer(); return;
         }
       }catch(_){}
-
-      // 보수적 폴백: 내 로컬 진행도 기준으로 다음 문제 표시
-      if (!meFinished) renderQuestion(myIndexLocal);
-    }, 700);
+    }, 600);
   }
 </script>
 </body>
