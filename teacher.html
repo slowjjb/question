@@ -300,14 +300,21 @@
       const idx = Number(g.currentIndex || 0);
       autoFired = false;
 
-      // 1) 현재 '온라인' 인원 (최근 30초 하트비트)
-      const cutoff = firebase.firestore.Timestamp.fromDate(new Date(Date.now() - 30*1000));
+      // 1) 현재 '온라인' 인원: active=true 또는 최근 40초 내 하트비트가 있는 학생만
       playerUnsubAuto = db.collection('q_games').doc(gameId)
         .collection('q_players')
-        .where('lastSeenAt','>=', cutoff)
-        .onSnapshot(s=>{ playersCnt = s.size; });
+        .onSnapshot(s=>{
+          let activeCount = 0;
+          const now = Date.now();
+          s.forEach(d=>{
+            const p = d.data() || {};
+            const last = p.lastSeenAt && p.lastSeenAt.toMillis ? p.lastSeenAt.toMillis() : 0;
+            if (p.active === true || (last && (now - last) < 40000)) activeCount++;
+          });
+          playersCnt = activeCount;
+        });
 
-      // 2) 현재 문항의 제출 집계 (시작 이후의 제출만)
+      // 2) 현재 문항의 제출 집계: '시작 이후' + '제출 완료'만 인정
       respUnsubAuto = db.collection('q_games').doc(gameId)
         .collection('q_responses').where('order','==', idx)
         .onSnapshot(s=>{
@@ -318,26 +325,30 @@
 
           s.forEach(d=>{
             const r = d.data(); if (!r) return;
-            const ts = r.answeredAt?.toMillis?.() ?? r.createdAt?.toMillis?.() ?? 0;
-            const isAfterStart = startMs ? (ts >= startMs - 500) : true;
 
-            const hasSubmittedFlag = r.submitted === true;
-            const hasAnyAnswer =
-              (typeof r.answer === 'string' ? r.answer.trim() !== '' : (r.answer != null)) ||
-              r.isCorrect === true || r.isCorrect === false;
+            // 학생이 기록하는 제출시각(선호) → 없으면 answeredAt → createdAt 폴백
+            const subMs =
+              (r.submittedAt && r.submittedAt.toMillis ? r.submittedAt.toMillis() : 0) ||
+              (r.answeredAt   && r.answeredAt.toMillis   ? r.answeredAt.toMillis()   : 0) ||
+              (r.createdAt    && r.createdAt.toMillis    ? r.createdAt.toMillis()    : 0);
 
-            if (isAfterStart && (hasSubmittedFlag || hasAnyAnswer) && r.playerId) {
+            const isAfterStart = startMs ? (subMs >= startMs - 500) : true;
+
+            const submittedFlag = r.submitted === true || !!subMs;
+            const hasPlayer = !!r.playerId;
+
+            if (isAfterStart && submittedFlag && hasPlayer) {
               responded.add(r.playerId);
             }
           });
 
-          if (!autoFired && playersCnt>0 && responded.size >= playersCnt) {
+          if (!autoFired && playersCnt > 0 && responded.size >= playersCnt) {
             autoFired = true;
             setTimeout(()=> goNextFromAuto(idx), 1200);
           }
         });
 
-      // 3) 시간 초과
+      // 3) 시간 초과(교사 제한)
       const startAt = g.questionStartAt && g.questionStartAt.toMillis
             ? g.questionStartAt.toMillis() : Date.now();
       autoTick = setInterval(()=>{
