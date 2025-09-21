@@ -42,7 +42,7 @@
       <button id="btnReset"  class="ghost"  disabled>초기화(대기)</button>
       <button id="btnEnd"    class="danger" disabled>종료</button>
 
-      <!-- ⬇ 자동진행 토글 버튼 추가 -->
+      <!-- 자동진행 토글 -->
       <button id="btnAuto" class="ghost">자동진행: OFF</button>
 
       <button id="btnSignOut" class="ghost">로그아웃</button>
@@ -161,7 +161,6 @@
         const opt = document.createElement('option'); opt.value = t.id; opt.textContent = `${t.title}  (${t.id})`;
         sel.appendChild(opt);
       });
-      // 선택 시 정보 갱신
       sel.onchange = async ()=>{
         const id = sel.value;
         if (!id) { $('#tplInfo').textContent='미리보기: -문항'; return; }
@@ -205,6 +204,32 @@
       }, {merge:true});
 
       return snap.size;
+    }
+
+    // ───────────────── (추가) 지난 응답/점수 정리
+    async function clearResponses(gameId){
+      const col = db.collection('q_games').doc(gameId).collection('q_responses');
+      const snap = await col.get();
+      if (snap.empty) return;
+      let batch = db.batch(), n = 0;
+      snap.forEach(doc=>{
+        batch.delete(col.doc(doc.id));
+        n++;
+        if (n % 400 === 0){ batch.commit(); batch = db.batch(); }
+      });
+      await batch.commit();
+    }
+    // (선택) 점수 초기화가 필요하면 사용
+    async function resetPlayerScores(gameId){
+      const col = db.collection('q_games').doc(gameId).collection('q_players');
+      const snap = await col.get();
+      if (snap.empty) return;
+      let batch = db.batch(), n=0;
+      snap.forEach(doc=>{
+        batch.set(col.doc(doc.id), { scoreTotal: 0 }, { merge:true });
+        n++; if (n%400===0){ batch.commit(); batch = db.batch(); }
+      });
+      await batch.commit();
     }
 
     // ───────────────── 자동진행(ALL SUBMIT or TIMEOUT)
@@ -343,7 +368,7 @@
         status:'waiting', createdBy:user.uid,
         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
         currentIndex:-1, totalQuestions:0,
-        auto:false                             // 새 게임 기본값
+        auto:false
       };
       await db.collection('q_games').doc(gameId).set(gameDoc,{merge:true});
       localStorage.setItem('q_gameId', gameId);
@@ -353,11 +378,23 @@
     $('#btnCopy').addEventListener('click', async ()=>{ try{ await navigator.clipboard.writeText(gameId); alert('게임 ID 복사됨'); }catch{ alert('복사 실패'); } });
     $('#btnSignOut').addEventListener('click', async ()=>{ await auth.signOut(); location.replace('./teacher-login.html'); });
 
+    // 시작: 지난 응답 제거 후 시작
     $('#btnStart').addEventListener('click', async ()=>{
       if(!gameId) return;
       const gref = db.collection('q_games').doc(gameId);
-      await gref.set({ status:'running', currentIndex:0, questionStartAt: firebase.firestore.FieldValue.serverTimestamp() }, {merge:true});
+
+      // ✅ 지난 라운드 응답을 모두 삭제(즉시 자동진행 방지)
+      await clearResponses(gameId);
+      // (필요하면 점수도 초기화)
+      // await resetPlayerScores(gameId);
+
+      await gref.set({
+        status:'running',
+        currentIndex:0,
+        questionStartAt: firebase.firestore.FieldValue.serverTimestamp()
+      }, {merge:true});
     });
+
     $('#btnPrev').addEventListener('click', async ()=>{
       const gref = db.collection('q_games').doc(gameId);
       const g=(await gref.get()).data(); const idx=Number(g.currentIndex??0);
@@ -376,17 +413,21 @@
         await gref.set({ currentIndex: next, questionStartAt: firebase.firestore.FieldValue.serverTimestamp() }, {merge:true});
       }
     });
+
+    // 초기화(대기): 응답도 함께 비워 안전하게 리셋
     $('#btnReset').addEventListener('click', async ()=>{
       if(!confirm('게임을 대기 상태로 초기화할까요? (현재 진행 위치가 초기화됩니다)')) return;
       killAutoWatchers();
+      await clearResponses(gameId);           // ✅ 응답 비우기
       await db.collection('q_games').doc(gameId).set({ status:'waiting', currentIndex:-1 }, {merge:true});
     });
+
     $('#btnEnd').addEventListener('click', async ()=>{
       killAutoWatchers();
       await db.collection('q_games').doc(gameId).set({ status:'ended' }, {merge:true});
     });
 
-    // ⬇ 자동진행 토글
+    // 자동진행 토글
     document.getElementById('btnAuto').addEventListener('click', async ()=>{
       autoMode = !autoMode;
       document.getElementById('btnAuto').textContent = '자동진행: ' + (autoMode ? 'ON' : 'OFF');
