@@ -3,59 +3,288 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>게임 화면 (대기)</title>
+  <title>게임 화면</title>
   <style>
-    :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, "Noto Sans KR", sans-serif; }
-    body { margin:0; background:#0f172a; color:#fff; display:grid; place-items:center; min-height:100vh; }
-    .card { background:#111827; border:1px solid #374151; border-radius:16px; padding:24px; width:92%; max-width:420px; text-align:center; }
-    .kbd{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; background:#0b1220;border:1px solid #334155;padding:4px 6px;border-radius:8px}
+    :root{--bg:#0f172a;--panel:#111827;--line:#334155;--muted:#94a3b8;--brand:#1d4ed8;--ok:#22c55e;--warn:#f59e0b;--danger:#ef4444}
+    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:#fff;font-family:system-ui,-apple-system,Segoe UI,Roboto,"Noto Sans KR",sans-serif}
+    .wrap{max-width:860px;margin:24px auto;padding:0 16px}
+    .card{background:#111827;border:1px solid var(--line);border-radius:16px;padding:20px}
+    .center{display:grid;place-items:center;min-height:40vh;text-align:center}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .pill{display:inline-block;background:#172554;border:1px solid #334155;border-radius:999px;padding:6px 10px;font-weight:700}
+    .kbd{font-family:ui-monospace,monospace;background:#0b1220;border:1px solid #334155;padding:4px 6px;border-radius:8px}
+    button{padding:11px 14px;border-radius:10px;border:0;font-weight:800;cursor:pointer}
+    .primary{background:var(--ok);color:#052814}
+    .ghost{background:#374151;color:#fff}
+    .danger{background:var(--danger);color:#2b0b0b}
+    .muted{color:var(--muted)}
+    .qbox{margin-top:12px;padding:14px;border:1px solid var(--line);border-radius:12px;background:#0b1220}
+    .choice{display:block;padding:12px 14px;border:1px solid #334155;border-radius:12px;margin-top:8px;cursor:pointer}
+    .choice.active{outline:3px solid #60a5fa;border-color:#60a5fa;background:#0b1930}
+    input[type="text"]{width:100%;padding:12px 14px;border-radius:12px;border:1px solid #334155;background:#0b1220;color:#fff}
+    h1{font-size:22px;margin:0 0 6px} h2{font-size:18px;margin:0 0 10px}
   </style>
 </head>
 <body>
-  <div class="card">
-    <div id="status">게임 연결 확인 중...</div>
-    <div style="margin-top:10px;">게임 ID: <span id="gid" class="kbd"></span></div>
+<div class="wrap">
+
+  <!-- 상단 바 -->
+  <div class="row" style="justify-content:space-between;margin-bottom:10px">
+    <div class="pill">게임 화면</div>
+    <div class="row">
+      <div class="pill">게임 ID: <span id="gid" class="kbd">-</span></div>
+      <div class="pill">상태: <span id="gstatus">-</span></div>
+      <div class="pill">문항: <span id="gindex">-</span></div>
+    </div>
   </div>
 
-  <!-- Firebase CDN (compat) -->
-  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
-  <script src="./js/firebase-init.js"></script>
-  <script>
-    function getQuery(key){
-      const u = new URL(location.href);
-      return u.searchParams.get(key);
-    }
-    const gameId = getQuery('game') || localStorage.getItem('q_gameId') || '';
-    document.getElementById('gid').textContent = gameId || '(없음)';
+  <!-- 대기/종료 -->
+  <div id="view-wait" class="card center" style="display:none">
+    <div id="wait-text">대기 중… (교사가 시작하면 문제 화면으로 전환됩니다)</div>
+    <div style="margin-top:10px">게임 ID: <span id="gid2" class="kbd"></span></div>
+  </div>
 
-    auth.onAuthStateChanged(async (user) => {
-      if (!user) { try { await auth.signInAnonymously(); } catch(e){} }
-      if (!gameId) {
-        document.getElementById('status').textContent = '게임 ID 없음: join 화면으로 돌아가세요.';
-        return;
+  <!-- 문제 -->
+  <div id="view-q" class="card" style="display:none">
+    <div class="row" style="justify-content:space-between">
+      <h1 id="q-title">문제</h1>
+      <div class="row">
+        <div class="pill">경과 <span id="tm">0.0</span>s</div>
+        <div class="pill">감점 <span id="pen">0</span></div>
+      </div>
+    </div>
+
+    <div class="qbox">
+      <h2 id="q-prompt"></h2>
+      <div id="q-choices" style="margin-top:8px"></div>
+      <div id="q-short" style="margin-top:8px;display:none">
+        <input id="short-input" type="text" placeholder="정답을 입력하세요" />
+      </div>
+    </div>
+
+    <div class="row" style="justify-content:flex-end;margin-top:12px">
+      <button id="btnSubmit" class="primary">제출</button>
+    </div>
+    <div id="after-msg" class="muted" style="margin-top:8px;display:none"></div>
+  </div>
+
+  <!-- 종료 -->
+  <div id="view-end" class="card center" style="display:none">
+    <div>게임이 종료되었습니다.</div>
+    <div style="margin-top:10px">게임 ID: <span id="gid3" class="kbd"></span></div>
+  </div>
+
+</div>
+
+<!-- Firebase -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="./js/firebase-init.js"></script>
+<script>
+  // ── helpers
+  const $=s=>document.querySelector(s);
+  function getQuery(k){const u=new URL(location.href);return u.searchParams.get(k)}
+  const gameId = getQuery('game') || localStorage.getItem('q_gameId') || '';
+  $('#gid').textContent = $('#gid2').textContent = $('#gid3').textContent = gameId || '(없음)';
+  const playersCol = ()=>db.collection('q_games').doc(gameId).collection('q_players');
+  const questionsCol = ()=>db.collection('q_games').doc(gameId).collection('q_questions');
+  const responsesCol = ()=>db.collection('q_games').doc(gameId).collection('q_responses');
+
+  // ── view switch
+  function show(id){
+    for(const v of ['#view-wait','#view-q','#view-end']) $(v).style.display='none';
+    $(id).style.display='block';
+  }
+
+  // ── scoring (10점 만점, 20초까지 무감점, 이후 10초마다 -1, 70초 초과시 시간초과 0점)
+  function calcScore(isCorrect, elapsedSec){
+    if(!isCorrect) return {score:0,penalty:0};
+    const over = Math.max(0, elapsedSec - 20);
+    let penalty = Math.ceil(over/10);
+    penalty = Math.min(5, penalty);
+    const score = Math.max(0, 10 - penalty);
+    return {score,penalty};
+  }
+
+  // ── user/auth + 내 player 문서 준비
+  let ME=null; let playerDoc=null;
+  auth.onAuthStateChanged(async (u)=>{
+    try{
+      if(!u) u = (await auth.signInAnonymously()).user;
+      ME = u;
+
+      // 내 player 문서가 없으면 만들어두기(이름/반/번호는 join에서 이미 저장했다고 가정)
+      const pRef = playersCol().doc(ME.uid);
+      const pSnap = await pRef.get();
+      if(!pSnap.exists){
+        await pRef.set({
+          pid: ME.uid, name: localStorage.getItem('q_name')||'학생',
+          klass: localStorage.getItem('q_class')||'', number: localStorage.getItem('q_no')||'',
+          scoreTotal: 0, createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        }, {merge:true});
       }
-      // 게임 상태 리스닝
-      db.collection('q_games').doc(gameId).onSnapshot((snap)=>{
-        if (!snap.exists) {
-          document.getElementById('status').textContent = '게임을 찾을 수 없습니다. 게임 ID를 확인하세요.';
-          return;
-        }
-        const g = snap.data();
-        if (g.status === 'waiting') {
-          document.getElementById('status').textContent = '대기 중... (교사가 시작하면 문제 화면으로 전환됩니다)';
-        } else if (g.status === 'running') {
-          document.getElementById('status').textContent = '진행 중... (다음 단계에서 문제 표시가 붙습니다)';
-        } else if (g.status === 'ended') {
-          document.getElementById('status').textContent = '게임이 종료되었습니다.';
-        } else {
-          document.getElementById('status').textContent = '상태: ' + g.status;
-        }
-      }, (err)=> {
-        document.getElementById('status').textContent = '접속 오류: ' + err.message;
-      });
+      playerDoc = pRef;
+      bindGame();
+    }catch(e){
+      alert('로그인 오류: '+e.message);
+    }
+  });
+
+  // ── game binding
+  let unsubGame=null, unsubQ=null, timer=null, submitted=false;
+  let currentIndex=-1, startMs=0, currentQ=null;
+
+  function bindGame(){
+    if(!gameId){ $('#wait-text').textContent='게임 ID 없음: join 화면에서 다시 입장해 주세요.'; show('#view-wait'); return; }
+
+    if(unsubGame) unsubGame();
+    unsubGame = db.collection('q_games').doc(gameId).onSnapshot(async (snap)=>{
+      if(!snap.exists){ $('#wait-text').textContent='게임을 찾을 수 없습니다.'; show('#view-wait'); return; }
+
+      const g=snap.data();
+      $('#gstatus').textContent = g.status;
+      $('#gindex').textContent  = g.currentIndex;
+      if(g.status==='waiting'){ show('#view-wait'); stopTimer(); return; }
+      if(g.status==='ended'){ show('#view-end'); stopTimer(); return; }
+
+      // running
+      if(typeof g.currentIndex!=='number' || g.currentIndex<0){ show('#view-wait'); stopTimer(); return; }
+
+      // 질문 바인딩
+      if(currentIndex!==g.currentIndex){
+        currentIndex = g.currentIndex;
+        startMs = (g.questionStartAt && g.questionStartAt.toMillis) ? g.questionStartAt.toMillis() : Date.now();
+        submitted=false;
+        $('#after-msg').style.display='none';
+        renderQuestion(currentIndex);
+      }else{
+        // 같은 문제라도 startTime 갱신되면 타이머 재시작
+        const ms = (g.questionStartAt && g.questionStartAt.toMillis) ? g.questionStartAt.toMillis() : startMs;
+        if(ms!==startMs){ startMs=ms; submitted=false; $('#after-msg').style.display='none'; }
+      }
     });
-  </script>
+  }
+
+  async function renderQuestion(order){
+    try{
+      stopTimer();
+      // order 로 문서 하나 찾기
+      const qSnap = await questionsCol().where('order','==',order).limit(1).get();
+      if(qSnap.empty){ $('#wait-text').textContent='문제를 불러올 수 없습니다.'; show('#view-wait'); return; }
+      currentQ = qSnap.docs[0].data();
+      // UI
+      $('#q-title').textContent = `문제 ${order+1}`;
+      $('#q-prompt').textContent = currentQ.prompt;
+      const box = $('#q-choices'); box.innerHTML='';
+      $('#q-short').style.display='none';
+      if(currentQ.type==='mcq'){
+        const ch = currentQ.choices || [];
+        ch.forEach((t,i)=>{
+          const label = String.fromCharCode(65+i); // A,B...
+          const div = document.createElement('div');
+          div.className='choice';
+          div.dataset.val = label;
+          div.innerHTML = `<b>${label}.</b> ${t||''}`;
+          div.onclick = ()=>{
+            document.querySelectorAll('.choice').forEach(x=>x.classList.remove('active'));
+            div.classList.add('active');
+          };
+          box.appendChild(div);
+        });
+      }else{
+        $('#q-short').style.display='block';
+      }
+
+      // 제출 상태/타이머
+      show('#view-q');
+      startTimer();
+    }catch(e){
+      alert('문제 표시 오류: '+e.message);
+    }
+  }
+
+  function startTimer(){
+    stopTimer();
+    timer = setInterval(()=>{
+      const sec = Math.max(0, (Date.now()-startMs)/1000);
+      $('#tm').textContent = sec.toFixed(1);
+      // penalty 표시(정오답 무관하게 미리 보기)
+      const pen = Math.min(5, Math.max(0, Math.ceil((sec-20)/10)));
+      $('#pen').textContent = pen;
+
+      // 70초 초과 → 시간초과 자동 처리 (아직 제출 안했을 때)
+      if(!submitted && sec>70){
+        doSubmit(true); // timeout=true
+      }
+    }, 200);
+  }
+  function stopTimer(){ if(timer){ clearInterval(timer); timer=null; } }
+
+  // ── 제출 처리
+  $('#btnSubmit').addEventListener('click', ()=> doSubmit(false));
+
+  async function doSubmit(timeout){
+    if(submitted || !currentQ) return;
+    submitted = true;
+    const elapsedSec = Math.floor((Date.now()-startMs)/1000);
+
+    let myAnswer='', isCorrect=false;
+    if(timeout){
+      myAnswer = '(시간초과)';
+      isCorrect = false;
+    }else if(currentQ.type==='mcq'){
+      const act = document.querySelector('.choice.active');
+      if(!act){ alert('보기를 선택해 주세요.'); submitted=false; return; }
+      myAnswer = act.dataset.val;
+      isCorrect = (String(myAnswer).toUpperCase() === String(currentQ.answer||'').trim().toUpperCase());
+    }else{
+      myAnswer = ($('#short-input').value||'').trim();
+      if(!myAnswer){ alert('정답을 입력해 주세요.'); submitted=false; return; }
+      // 주관식: 정확 일치(트림, 대소문자 무시 영어만)
+      const norm = s=>s.trim().replace(/\s+/g,' ');
+      isCorrect = (norm(myAnswer).toLowerCase() === norm(String(currentQ.answer||'')).toLowerCase());
+    }
+
+    const {score, penalty} = timeout ? {score:0,penalty:5} : calcScore(isCorrect, elapsedSec);
+
+    // 결과 메시지
+    const msg = timeout
+      ? `⏱ 시간초과입니다. (경과 ${elapsedSec}s)`
+      : (isCorrect ? `✅ 정답! 경과 ${elapsedSec}s, 감점 ${penalty}, 점수 ${score}점`
+                   : `❌ 오답입니다. (경과 ${elapsedSec}s)`);
+    $('#after-msg').textContent = msg;
+    $('#after-msg').style.display='block';
+
+    // 응답 저장 (중복 방지: uid_order)
+    const rid = `${ME.uid}_${currentIndex}`;
+    try{
+      await responsesCol().doc(rid).set({
+        rid, gameId, order: currentIndex,
+        playerId: ME.uid,
+        answer: myAnswer,
+        correctAnswer: currentQ.answer || '',
+        isCorrect, elapsedSec, penalty, score,
+        submittedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        type: currentQ.type
+      }, {merge:false});
+    }catch(e){
+      // 이미 제출된 경우 등은 무시
+    }
+
+    // 내 누적 점수 반영
+    try{
+      await playerDoc.set({
+        scoreTotal: firebase.firestore.FieldValue.increment(score),
+        lastSubmittedOrder: currentIndex,
+        lastElapsedSec: elapsedSec
+      }, {merge:true});
+    }catch(_){}
+
+    // 제출 후 버튼 비활성화
+    $('#btnSubmit').disabled = true;
+    setTimeout(()=>{ $('#btnSubmit').disabled=false; }, 2000);
+  }
+</script>
 </body>
 </html>
