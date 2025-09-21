@@ -41,6 +41,10 @@
       <button id="btnNext"   class="ghost"  disabled>다음 문제</button>
       <button id="btnReset"  class="ghost"  disabled>초기화(대기)</button>
       <button id="btnEnd"    class="danger" disabled>종료</button>
+
+      <!-- ⬇ 자동진행 토글 버튼 추가 -->
+      <button id="btnAuto" class="ghost">자동진행: OFF</button>
+
       <button id="btnSignOut" class="ghost">로그아웃</button>
       <a href="./teacher-login.html" class="pill" style="text-decoration:none;">로그인 화면으로</a>
     </div>
@@ -70,7 +74,7 @@
         <button id="btnTplAdd" class="primary">템플릿 추가(저장)</button>
         <button id="btnTplImport" class="ghost">ID로 불러오기</button>
       </div>
-      <small>Tips) 템플릿은 **브라우저 로컬 저장소**에 저장됩니다. 여러 세트를 만들어 두고 필요할 때 불러오세요.</small>
+      <small>Tips) 템플릿은 <b>브라우저 로컬 저장소</b>에 저장됩니다. 여러 세트를 만들어 두고 필요할 때 불러오세요.</small>
     </section>
 
     <!-- 문제 에디터 -->
@@ -203,6 +207,76 @@
       return snap.size;
     }
 
+    // ───────────────── 자동진행(ALL SUBMIT or TIMEOUT)
+    let autoMode = false;                 // 자동진행 ON/OFF
+    let limitSec = 75;                    // 한 문제 최대 대기 시간(초)
+    let autoTick = null;                  // 시간 감시 타이머
+    let respUnsub = null;                 // 현재 문항 응답 리스너
+    let playerUnsub = null;               // 플레이어 수 리스너
+    let playersCnt = 0;                   // 현재 인원
+    let autoFired = false;                // 중복 방지
+
+    function killAutoWatchers(){
+      autoFired = false;
+      if (autoTick){ clearInterval(autoTick); autoTick = null; }
+      if (respUnsub){ respUnsub(); respUnsub = null; }
+      if (playerUnsub){ playerUnsub(); playerUnsub = null; }
+    }
+
+    async function goNextFromAuto(idx){
+      const gref = db.collection('q_games').doc(gameId);
+      const g = (await gref.get()).data();
+      if (!g || g.status!=='running' || g.currentIndex !== idx) return;  // 이미 바뀌었으면 취소
+
+      const total = Number(g.totalQuestions || 0);
+      const next  = idx + 1;
+      if (next >= total) {
+        await gref.set({ status: 'ended' }, {merge:true});
+      } else {
+        await gref.set({
+          currentIndex: next,
+          questionStartAt: firebase.firestore.FieldValue.serverTimestamp()
+        }, {merge:true});
+      }
+    }
+
+    function setupAutoForQuestion(g){
+      killAutoWatchers();
+      if (!autoMode || !gameId || g.status!=='running') return;
+
+      const idx = Number(g.currentIndex || 0);
+      autoFired = false;
+
+      // 1) 현재 인원 리스너
+      playerUnsub = db.collection('q_games').doc(gameId)
+        .collection('q_players')
+        .onSnapshot(s=>{ playersCnt = s.size; });
+
+      // 2) 현재 문항 응답 리스너
+      respUnsub = db.collection('q_games').doc(gameId)
+        .collection('q_responses').where('order','==', idx)
+        .onSnapshot(s=>{
+          const responded = new Set();
+          s.forEach(d=> responded.add(d.data().playerId));
+          if (!autoFired && playersCnt>0 && responded.size >= playersCnt) {
+            autoFired = true;
+            setTimeout(()=> goNextFromAuto(idx), 1200); // 1.2초 여유
+          }
+        });
+
+      // 3) 시간 초과 감시
+      const startAt = g.questionStartAt && g.questionStartAt.toMillis
+            ? g.questionStartAt.toMillis() : Date.now();
+      autoTick = setInterval(()=>{
+        if (autoFired) return;
+        const elapsed = (Date.now() - startAt) / 1000;
+        if (elapsed >= limitSec) {
+          autoFired = true;
+          goNextFromAuto(idx);
+        }
+      }, 500);
+    }
+
     // ───────────────── 게임 UI 바인딩
     function ensureUI(){
       if (!gameId) return;
@@ -229,6 +303,11 @@
         $('#btnNext').disabled  = !(g.status==='running' && idx < total-1);
         $('#btnEnd').disabled   = !(g.status==='running');
         $('#btnReset').disabled = (g.status==='waiting');
+
+        // 자동진행 표시/세팅
+        autoMode = !!g.auto;
+        $('#btnAuto').textContent = '자동진행: ' + (autoMode ? 'ON' : 'OFF');
+        setupAutoForQuestion(g);
       });
 
       if (unsubList) unsubList();
@@ -263,7 +342,8 @@
         title: `퀴즈 - ${new Date().toLocaleString()}`,
         status:'waiting', createdBy:user.uid,
         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-        currentIndex:-1, totalQuestions:0
+        currentIndex:-1, totalQuestions:0,
+        auto:false                             // 새 게임 기본값
       };
       await db.collection('q_games').doc(gameId).set(gameDoc,{merge:true});
       localStorage.setItem('q_gameId', gameId);
@@ -298,9 +378,22 @@
     });
     $('#btnReset').addEventListener('click', async ()=>{
       if(!confirm('게임을 대기 상태로 초기화할까요? (현재 진행 위치가 초기화됩니다)')) return;
+      killAutoWatchers();
       await db.collection('q_games').doc(gameId).set({ status:'waiting', currentIndex:-1 }, {merge:true});
     });
-    $('#btnEnd').addEventListener('click', async ()=>{ await db.collection('q_games').doc(gameId).set({ status:'ended' }, {merge:true}); });
+    $('#btnEnd').addEventListener('click', async ()=>{
+      killAutoWatchers();
+      await db.collection('q_games').doc(gameId).set({ status:'ended' }, {merge:true});
+    });
+
+    // ⬇ 자동진행 토글
+    document.getElementById('btnAuto').addEventListener('click', async ()=>{
+      autoMode = !autoMode;
+      document.getElementById('btnAuto').textContent = '자동진행: ' + (autoMode ? 'ON' : 'OFF');
+      if (gameId) await db.collection('q_games').doc(gameId).set({ auto: autoMode }, {merge:true});
+      const g = (await db.collection('q_games').doc(gameId).get()).data();
+      if (g) setupAutoForQuestion(g);
+    });
 
     // ───────────────── 문제 에디터
     const $choices = () => [...document.querySelectorAll('[data-chidx]')];
