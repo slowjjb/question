@@ -17,7 +17,7 @@
     button{padding:11px 14px;border-radius:10px;border:0;font-weight:800;cursor:pointer}
     .primary{background:var(--ok);color:#052814}
     .ghost{background:#374151;color:#fff}
-    .danger{background:var(--danger);color:#2b0b0b}
+    .danger{background:#ef4444;color:#2b0b0b}
     .muted{color:#94a3b8}
     .qbox{margin-top:12px;padding:14px;border:1px solid var(--line);border-radius:12px;background:#0b1220}
     .choice{display:block;padding:12px 14px;border:1px solid #334155;border-radius:12px;margin-top:8px;cursor:pointer}
@@ -293,16 +293,15 @@
     $('#after-msg').textContent = msg;
     $('#after-msg').style.display='block';
 
-    // 응답 저장 (submittedAt 추가: 교사 자동진행이 이 필드를 감지)
+    // 응답 저장 (tr.create + submittedAt: 자동진행 트리거)
     const rid = `${ME.uid}_${currentIndex}`;
     const nowTs = firebase.firestore.FieldValue.serverTimestamp();
     try{
       await db.runTransaction(async (tr)=>{
         const ref = responsesCol().doc(rid);
-        const prev = await tr.get(ref);
-        if (prev.exists && prev.data()?.submitted && prev.data()?.order === currentIndex) return;
 
-        tr.set(ref, {
+        // 이미 있으면 'create'가 실패하며 트랜잭션 전체가 롤백 → 점수 중복 방지
+        tr.create(ref, {
           rid, gameId, order: currentIndex,
           playerId: ME.uid,
           answer: myAnswer,
@@ -310,9 +309,9 @@
           isCorrect, elapsedSec, penalty, score,
           type: currentQ.type,
           createdAt: nowTs,
-          submitted: true,
-          submittedAt: nowTs,   // ← 중요: 자동진행 트리거
-          answeredAt: nowTs
+          answeredAt: nowTs,
+          submittedAt: nowTs,   // ← 교사 자동진행이 우선 참조
+          submitted: true
         });
 
         tr.set(playerDoc, {
@@ -322,7 +321,8 @@
         }, {merge:true});
       });
     }catch(e){
-      console.warn('제출 처리 중 오류(무시 가능):', e?.message||e);
+      // 이미 제출된 경우 등은 조용히 무시(재제출 방지)
+      console.warn('이미 제출됨 또는 일시 오류:', e?.message||e);
     }
 
     $('#btnSubmit').disabled = true;
