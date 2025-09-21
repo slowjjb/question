@@ -18,7 +18,7 @@
     .primary{background:var(--ok);color:#052814}
     .ghost{background:#374151;color:#fff}
     .danger{background:var(--danger);color:#2b0b0b}
-    .muted{color:var(--muted)}
+    .muted{color:#94a3b8}
     .qbox{margin-top:12px;padding:14px;border:1px solid var(--line);border-radius:12px;background:#0b1220}
     .choice{display:block;padding:12px 14px;border:1px solid #334155;border-radius:12px;margin-top:8px;cursor:pointer}
     .choice.active{outline:3px solid #60a5fa;border-color:#60a5fa;background:#0b1930}
@@ -99,25 +99,25 @@
     $(id).style.display='block';
   }
 
-  // 점수(10점 만점, 20초 무감점, 이후 10초마다 -1, 최대 -5)
+  // 점수 규칙(정답일 때만): 10초부터 10초마다 -1, 최대 -5
   function calcScore(isCorrect, elapsedSec){
     if(!isCorrect) return {score:0,penalty:0};
-    const over = Math.max(0, elapsedSec - 20);
+    const over = Math.max(0, elapsedSec - 10);
     let penalty = Math.ceil(over/10);
     penalty = Math.min(5, penalty);
     const score = Math.max(0, 10 - penalty);
     return {score,penalty};
   }
 
-  // ── user/auth + 내 player 문서 준비 (+ presence 하트비트)
+  // ── auth + 내 player 문서 (+presence heartbeat)
   let ME=null; let playerDoc=null; let hb=null;
   async function startHeartbeat(){
     const push = () => playerDoc.set({
       active:true, lastSeenAt: firebase.firestore.FieldValue.serverTimestamp()
     }, {merge:true});
     try{
-      await push();                          // 진입 즉시 한 번
-      hb = setInterval(push, 15000);         // 15초마다 하트비트
+      await push();
+      hb = setInterval(push, 15000);
       document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) push(); });
       window.addEventListener('beforeunload', ()=>{
         try{ playerDoc.set({ active:false, lastSeenAt: firebase.firestore.FieldValue.serverTimestamp() }, {merge:true}); }catch(_){}
@@ -131,7 +131,6 @@
       if(!u) u = (await auth.signInAnonymously()).user;
       ME = u;
 
-      // 내 player 문서(없으면 생성)
       const pRef = playersCol().doc(ME.uid);
       const pSnap = await pRef.get();
       if(!pSnap.exists){
@@ -146,9 +145,7 @@
       }
       playerDoc = pRef;
 
-      // presence 시작
       startHeartbeat();
-
       bindGame();
     }catch(e){
       alert('로그인 오류: '+e.message);
@@ -158,7 +155,7 @@
   // ── game binding
   let unsubGame=null, timer=null, submitted=false;
   let currentIndex=-1, startMs=0, currentQ=null;
-  let limitSec = 75; // 교사 화면의 autoLimitSec 동기화
+  let limitSec = 75; // 교사 autoLimitSec 과 동기화
 
   function bindGame(){
     if(!gameId){ $('#wait-text').textContent='게임 ID 없음: join 화면에서 다시 입장해 주세요.'; show('#view-wait'); return; }
@@ -170,12 +167,10 @@
       const g=snap.data();
       $('#gstatus').textContent = g.status;
 
-      // 상단 문항 표기: 1-기반 "현재/총문항"
       const totalQ = g.totalQuestions || 0;
       const idxRaw = (typeof g.currentIndex === 'number') ? g.currentIndex : -1;
       $('#gindex').textContent = (idxRaw>=0 && totalQ>0) ? `${idxRaw+1}/${totalQ}` : '-';
 
-      // 제한(초) 동기화
       if (typeof g.autoLimitSec === 'number') {
         const v = g.autoLimitSec|0;
         limitSec = Math.max(5, Math.min(600, v));
@@ -185,7 +180,6 @@
       if(g.status==='ended'){ show('#view-end'); stopTimer(); return; }
       if(idxRaw<0){ show('#view-wait'); stopTimer(); return; }
 
-      // 새 문제 진입
       if(currentIndex!==idxRaw){
         currentIndex = idxRaw;
         startMs = (g.questionStartAt && g.questionStartAt.toMillis) ? g.questionStartAt.toMillis() : Date.now();
@@ -193,7 +187,6 @@
         $('#after-msg').style.display='none';
         await renderQuestion(currentIndex);
       }else{
-        // 같은 문항이라도 시작시각이 갱신되면 타이머/상태 초기화
         const ms = (g.questionStartAt && g.questionStartAt.toMillis) ? g.questionStartAt.toMillis() : startMs;
         if(ms!==startMs){
           startMs=ms; submitted=false;
@@ -208,16 +201,13 @@
     try{
       stopTimer();
 
-      // order 로 문서 하나 찾기
       const qSnap = await questionsCol().where('order','==',order).limit(1).get();
       if(qSnap.empty){ $('#wait-text').textContent='문제를 불러올 수 없습니다.'; show('#view-wait'); return; }
       currentQ = qSnap.docs[0].data();
 
-      // UI
       $('#q-title').textContent = `문제 ${order+1}`;
       $('#q-prompt').textContent = currentQ.prompt;
 
-      // 보기/입력 초기화
       const box = $('#q-choices'); box.innerHTML='';
       document.querySelectorAll('.choice').forEach(x=>x.classList.remove('active'));
       $('#q-short').style.display='none';
@@ -226,7 +216,7 @@
       if(currentQ.type==='mcq'){
         const ch = currentQ.choices || [];
         ch.forEach((t,i)=>{
-          const label = String.fromCharCode(65+i); // A,B...
+          const label = String.fromCharCode(65+i);
           const div = document.createElement('div');
           div.className='choice';
           div.dataset.val = label;
@@ -241,10 +231,7 @@
         $('#q-short').style.display='block';
       }
 
-      // 주관식 Enter 제출
-      $('#short-input').onkeydown = (e)=>{
-        if(e.key==='Enter'){ e.preventDefault(); doSubmit(false); }
-      };
+      $('#short-input').onkeydown = (e)=>{ if(e.key==='Enter'){ e.preventDefault(); doSubmit(false); } };
 
       show('#view-q');
       startTimer();
@@ -255,23 +242,25 @@
 
   function startTimer(){
     stopTimer();
+    // 선생님 제한과 50초 중 더 이른 시각에 자동 제출
+    const timeoutAt = Math.min(50, Math.max(5, limitSec));
+
     timer = setInterval(()=>{
       const sec = Math.max(0, (Date.now()-startMs)/1000);
       $('#tm').textContent = sec.toFixed(1);
 
-      // penalty 미리보기
-      const pen = Math.min(5, Math.max(0, Math.ceil((sec-20)/10)));
+      // 감점 미리보기(10초부터 시작, 최대 5)
+      const pen = Math.min(5, Math.max(0, Math.ceil((sec-10)/10)));
       $('#pen').textContent = pen;
 
-      // 교사 autoLimitSec 과 동기화된 시간초과 처리
-      if(!submitted && sec >= Math.max(5, limitSec)){
+      if(!submitted && sec >= timeoutAt){
         doSubmit(true); // timeout
       }
     }, 200);
   }
   function stopTimer(){ if(timer){ clearInterval(timer); timer=null; } }
 
-  // ── 제출
+  // 제출
   $('#btnSubmit').addEventListener('click', ()=> doSubmit(false));
 
   async function doSubmit(timeout){
@@ -297,7 +286,6 @@
 
     const {score, penalty} = timeout ? {score:0,penalty:5} : calcScore(isCorrect, elapsedSec);
 
-    // 결과 메시지
     const msg = timeout
       ? `⏱ 시간초과입니다. (경과 ${elapsedSec}s)`
       : (isCorrect ? `✅ 정답! 경과 ${elapsedSec}s, 감점 ${penalty}, 점수 ${score}점`
@@ -305,7 +293,7 @@
     $('#after-msg').textContent = msg;
     $('#after-msg').style.display='block';
 
-    // 응답 저장 (idempotent: 같은 문항 재제출 방지 + 점수 중복 방지)
+    // 응답 저장 (submittedAt 추가: 교사 자동진행이 이 필드를 감지)
     const rid = `${ME.uid}_${currentIndex}`;
     const nowTs = firebase.firestore.FieldValue.serverTimestamp();
     try{
@@ -323,10 +311,10 @@
           type: currentQ.type,
           createdAt: nowTs,
           submitted: true,
+          submittedAt: nowTs,   // ← 중요: 자동진행 트리거
           answeredAt: nowTs
         });
 
-        // 누적 점수 반영
         tr.set(playerDoc, {
           scoreTotal: firebase.firestore.FieldValue.increment(score),
           lastSubmittedOrder: currentIndex,
@@ -337,7 +325,6 @@
       console.warn('제출 처리 중 오류(무시 가능):', e?.message||e);
     }
 
-    // 버튼 잠깐 비활성화 (연타 방지)
     $('#btnSubmit').disabled = true;
     setTimeout(()=>{ $('#btnSubmit').disabled=false; }, 1500);
   }
