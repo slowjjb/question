@@ -85,7 +85,6 @@
 <!-- Firebase -->
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script src="./js/firebase-init.js"></script>
 <script>
   // helpers
@@ -121,9 +120,7 @@
 
   const TIMEOUT_SEC = 50;
   const AUTO_ADVANCE_MS = 0;
-  const NEXT_DELAY_MS = 3000;
-  let nextLock = false;
-  let triedEarlyClick = false;
+  let nextLock = false; // 중복 클릭 방지
 
   // cache
   let QMAP = new Map();
@@ -131,8 +128,7 @@
   async function updateTotalScore(){
     try{
       const snap = await playerDoc.get();
-      const sc = Number((snap.data()||{}).scoreTotal||0);
-      $('#totalScore').textContent = sc;
+      $('#totalScore').textContent = Number((snap.data()||{}).scoreTotal||0);
     }catch(_){}
   }
 
@@ -166,9 +162,7 @@
           name:  localStorage.getItem('q_name')  || '학생',
           klass: localStorage.getItem('q_class') || '',
           number:localStorage.getItem('q_no')    || '',
-          scoreTotal: 0,
-          progressIndex: 0,
-          finished: false,
+          scoreTotal: 0, progressIndex: 0, finished: false,
           createdAt: firebase.firestore.FieldValue.serverTimestamp(),
           lastSeenAt: firebase.firestore.FieldValue.serverTimestamp(),
           active: true
@@ -209,11 +203,9 @@
       if (totalQ>0) $('#gindex').textContent = `${Math.min(myIndex+1,totalQ)}/${totalQ}`;
       else $('#gindex').textContent = `${myIndex+1}/?`;
 
-      if(meFinished){
-        show('#view-end'); stopTimer(); updateTotalScore(); return;
-      }
+      if(meFinished){ show('#view-end'); stopTimer(); updateTotalScore(); return; }
 
-      // 제출 직후 자동 이동 금지
+      // 제출 직후 자동 이동 금지 (버튼으로만 이동)
       if (isRunning && (renderedIndex !== myIndex)){
         if (submitted) return;
         renderQuestion(myIndex);
@@ -245,7 +237,6 @@
           renderedIndex = -1;
           submitted = false;
           show('#view-wait'); stopTimer();
-
           if (unsubQs){ unsubQs(); unsubQs=null; }
           QMAP.clear();
         } else if (status === 'running' && lastGameStatus === 'waiting'){
@@ -297,8 +288,7 @@
       submitted=false;
       $('#after-msg').style.display='none';
       $('#btnNext').style.display='none';
-      $('#btnNext').disabled = true;
-      $('#btnSubmit').disabled = false; // ★ 새 문항에서 제출 가능하도록 복구
+      $('#btnSubmit').disabled = false; // 새 문항에서 제출 가능
 
       // cache first
       let q = QMAP.get(Number(order));
@@ -364,33 +354,21 @@
   // submit
   $('#btnSubmit').addEventListener('click', ()=> doSubmit(false));
 
-  // next / result
+  // next / result (즉시 전환)
   $('#btnNext').addEventListener('click', async ()=>{
     if (meFinished || nextLock) return;
-
-    // 비활성 상태면 "조기 클릭"으로 기록해서, 활성화 시 자동실행
-    if ($('#btnNext').disabled){
-      triedEarlyClick = true;
-      return;
-    }
-
     nextLock = true;
-    $('#btnNext').disabled = true;
-
-    const atLast = (totalQ>0 && (renderedIndex+1) >= totalQ);
-    if (atLast){
-      show('#view-end');
-      await updateTotalScore();
-      nextLock = false;
-      return;
-    }
-
-    $('#after-msg').textContent = '다음 문제 불러오는 중…';
-    $('#after-msg').style.display = 'block';
-
     try{
-      // ★ 항상 현재 화면의 다음 인덱스로 이동 (서버 반영 대기 X)
-      await renderQuestion(renderedIndex + 1);
+      const nextIndex = renderedIndex + 1;
+      const atLast = (totalQ>0 && nextIndex >= totalQ);
+      if (atLast){
+        show('#view-end');
+        await updateTotalScore();
+        return;
+      }
+      $('#after-msg').textContent = '다음 문제 불러오는 중…';
+      $('#after-msg').style.display = 'block';
+      await renderQuestion(nextIndex); // 즉시 다음 렌더
     }finally{
       nextLock = false;
     }
@@ -454,27 +432,14 @@
         }, {merge:true});
       });
 
-      // 로컬 진행도 +1
+      // 로컬 진행도 +1 (다음 이동은 항상 renderedIndex+1)
       myIndexLocal = Math.max(myIndexLocal, renderedIndex + 1);
       myIndex = myIndexLocal;
 
-      // 마지막 여부에 따라 라벨
+      // 버튼 즉시 노출, 누르면 바로 전환
       const atLast = (totalQ>0 && (renderedIndex+1) >= totalQ);
       $('#btnNext').textContent = atLast ? '결과 보기' : '다음으로';
-
-      // 다음 버튼 3초 후 활성화 (조기 클릭 기억했다가 자동 실행)
       $('#btnNext').style.display = 'inline-block';
-      $('#btnNext').disabled = true;
-      triedEarlyClick = false;
-
-      const enableNext = ()=>{
-        $('#btnNext').disabled = false;
-        if (triedEarlyClick){
-          triedEarlyClick = false;
-          $('#btnNext').click();
-        }
-      };
-      setTimeout(enableNext, NEXT_DELAY_MS);
 
       if (AUTO_ADVANCE_MS > 0 && !atLast) {
         setTimeout(()=>{ if (!meFinished) renderQuestion(renderedIndex + 1); }, AUTO_ADVANCE_MS);
@@ -484,11 +449,9 @@
       if (/already[- ]exists/i.test(String(e?.message||''))) {
         $('#after-msg').textContent = '이미 제출된 문항입니다. 다음으로 이동하세요.';
         $('#after-msg').style.display='block';
-        $('#btnNext').textContent = (totalQ>0 && (renderedIndex+1) >= totalQ) ? '결과 보기' : '다음으로';
+        const atLast = (totalQ>0 && (renderedIndex+1) >= totalQ);
+        $('#btnNext').textContent = atLast ? '결과 보기' : '다음으로';
         $('#btnNext').style.display = 'inline-block';
-        $('#btnNext').disabled = true;
-        triedEarlyClick = false;
-        setTimeout(()=>{ $('#btnNext').disabled = false; if (triedEarlyClick){ triedEarlyClick=false; $('#btnNext').click(); } }, NEXT_DELAY_MS);
       } else if (/permission-denied/i.test(String(e?.message||''))) {
         alert('제출 실패: 권한 오류(규칙). Firestore 규칙 게시 여부를 확인하세요.');
         submitted = false;
