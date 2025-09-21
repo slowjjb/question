@@ -88,7 +88,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script src="./js/firebase-init.js"></script>
 <script>
-  // ── helpers
+  // helpers
   const $=s=>document.querySelector(s);
   function getQuery(k){const u=new URL(location.href);return u.searchParams.get(k)}
   const gameId = getQuery('game') || localStorage.getItem('q_gameId') || '';
@@ -113,7 +113,7 @@
     return {score,penalty};
   }
 
-  // ── 상태
+  // state
   let ME=null, playerDoc=null, hb=null;
   let unsubGame=null, unsubMe=null, unsubQs=null, timer=null, submitted=false;
   let totalQ=0, myIndex=0, myIndexLocal=0, meFinished=false, renderedIndex=-1;
@@ -121,11 +121,11 @@
 
   const TIMEOUT_SEC = 50;
   const AUTO_ADVANCE_MS = 0;
-  const NEXT_DELAY_MS = 3000; // 다음 버튼 활성화까지 대기
+  const NEXT_DELAY_MS = 3000;
   let nextLock = false;
-  let triedEarlyClick = false; // 비활성 기간 중 클릭 시 감지
+  let triedEarlyClick = false;
 
-  // 문항 캐시
+  // cache
   let QMAP = new Map();
 
   async function updateTotalScore(){
@@ -136,7 +136,7 @@
     }catch(_){}
   }
 
-  // ── presence heartbeat
+  // heartbeat
   async function startHeartbeat(){
     const push = () => playerDoc.set({
       active:true, lastSeenAt: firebase.firestore.FieldValue.serverTimestamp()
@@ -152,7 +152,7 @@
     }catch(_){}
   }
 
-  // ── auth
+  // auth
   auth.onAuthStateChanged(async (u)=>{
     try{
       if(!u) u = (await auth.signInAnonymously()).user;
@@ -188,7 +188,7 @@
     }
   });
 
-  // ── 내 진행도/완료 바인딩
+  // me binding
   function bindMe(){
     if(unsubMe) unsubMe();
     unsubMe = playerDoc.onSnapshot(s=>{
@@ -213,7 +213,7 @@
         show('#view-end'); stopTimer(); updateTotalScore(); return;
       }
 
-      // 제출 직후 자동 이동 금지 (버튼으로만 이동)
+      // 제출 직후 자동 이동 금지
       if (isRunning && (renderedIndex !== myIndex)){
         if (submitted) return;
         renderQuestion(myIndex);
@@ -221,7 +221,7 @@
     });
   }
 
-  // ── game binding
+  // game binding
   function bindGame(){
     if(!gameId){ $('#wait-text').textContent='게임 ID 없음: join 화면에서 다시 입장해 주세요.'; show('#view-wait'); return; }
 
@@ -251,7 +251,6 @@
         } else if (status === 'running' && lastGameStatus === 'waiting'){
           allowServerDecrease = true;
           submitted = false;
-          // 문항 실시간 구독(캐시)
           if (unsubQs) unsubQs();
           unsubQs = questionsCol().orderBy('order','asc').onSnapshot(sn=>{
             const m=new Map();
@@ -281,7 +280,7 @@
     });
   }
 
-  // ── 문제 표시
+  // render question
   let currentQ=null;
   async function renderQuestion(order){
     try{
@@ -299,9 +298,9 @@
       $('#after-msg').style.display='none';
       $('#btnNext').style.display='none';
       $('#btnNext').disabled = true;
-      triedEarlyClick = false;
+      $('#btnSubmit').disabled = false; // ★ 새 문항에서 제출 가능하도록 복구
 
-      // 캐시 우선
+      // cache first
       let q = QMAP.get(Number(order));
       if (!q){
         const qSnap = await questionsCol().where('order','==', Number(order)).limit(1).get();
@@ -362,18 +361,24 @@
   }
   function stopTimer(){ if(timer){ clearInterval(timer); timer=null; } }
 
-  // 제출
+  // submit
   $('#btnSubmit').addEventListener('click', ()=> doSubmit(false));
 
-  // 다음/결과 보기
+  // next / result
   $('#btnNext').addEventListener('click', async ()=>{
     if (meFinished || nextLock) return;
+
+    // 비활성 상태면 "조기 클릭"으로 기록해서, 활성화 시 자동실행
+    if ($('#btnNext').disabled){
+      triedEarlyClick = true;
+      return;
+    }
+
     nextLock = true;
     $('#btnNext').disabled = true;
 
     const atLast = (totalQ>0 && (renderedIndex+1) >= totalQ);
     if (atLast){
-      // 결과 보기
       show('#view-end');
       await updateTotalScore();
       nextLock = false;
@@ -382,8 +387,9 @@
 
     $('#after-msg').textContent = '다음 문제 불러오는 중…';
     $('#after-msg').style.display = 'block';
+
     try{
-      // ★ 서버 진행도 대기 없이, 확정적으로 현재의 다음 인덱스로 이동
+      // ★ 항상 현재 화면의 다음 인덱스로 이동 (서버 반영 대기 X)
       await renderQuestion(renderedIndex + 1);
     }finally{
       nextLock = false;
@@ -448,15 +454,15 @@
         }, {merge:true});
       });
 
-      // 로컬 진행도 +1 (다음 이동은 renderedIndex+1을 사용)
+      // 로컬 진행도 +1
       myIndexLocal = Math.max(myIndexLocal, renderedIndex + 1);
       myIndex = myIndexLocal;
 
-      // 마지막 여부에 따라 버튼 라벨/행동
+      // 마지막 여부에 따라 라벨
       const atLast = (totalQ>0 && (renderedIndex+1) >= totalQ);
       $('#btnNext').textContent = atLast ? '결과 보기' : '다음으로';
 
-      // 다음 버튼 3초 후 활성화 (+ 비활성 기간 클릭 감지)
+      // 다음 버튼 3초 후 활성화 (조기 클릭 기억했다가 자동 실행)
       $('#btnNext').style.display = 'inline-block';
       $('#btnNext').disabled = true;
       triedEarlyClick = false;
@@ -464,13 +470,12 @@
       const enableNext = ()=>{
         $('#btnNext').disabled = false;
         if (triedEarlyClick){
-          // 비활성 동안 사용자가 눌렀다면 자동으로 한 번 진행시켜 체감 개선
+          triedEarlyClick = false;
           $('#btnNext').click();
         }
       };
       setTimeout(enableNext, NEXT_DELAY_MS);
 
-      // 자동 넘김 옵션
       if (AUTO_ADVANCE_MS > 0 && !atLast) {
         setTimeout(()=>{ if (!meFinished) renderQuestion(renderedIndex + 1); }, AUTO_ADVANCE_MS);
       }
@@ -482,7 +487,8 @@
         $('#btnNext').textContent = (totalQ>0 && (renderedIndex+1) >= totalQ) ? '결과 보기' : '다음으로';
         $('#btnNext').style.display = 'inline-block';
         $('#btnNext').disabled = true;
-        setTimeout(()=>{ $('#btnNext').disabled = false; }, NEXT_DELAY_MS);
+        triedEarlyClick = false;
+        setTimeout(()=>{ $('#btnNext').disabled = false; if (triedEarlyClick){ triedEarlyClick=false; $('#btnNext').click(); } }, NEXT_DELAY_MS);
       } else if (/permission-denied/i.test(String(e?.message||''))) {
         alert('제출 실패: 권한 오류(규칙). Firestore 규칙 게시 여부를 확인하세요.');
         submitted = false;
@@ -495,15 +501,6 @@
 
     $('#btnSubmit').disabled = true;
   }
-
-  // 비활성 상태에서 '다음으로' 연타 감지
-  document.addEventListener('click', (e)=>{
-    if (e.target && e.target.id === 'btnNext' && e.target.disabled) {
-      triedEarlyClick = true;
-      e.preventDefault();
-      e.stopPropagation();
-    }
-  });
 </script>
 </body>
 </html>
