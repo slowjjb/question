@@ -104,7 +104,6 @@
     $(id).style.display='block';
   }
 
-  // 점수 규칙(정답일 때만): 10초부터 10초마다 -1, 최대 -5
   function calcScore(isCorrect, elapsedSec){
     if(!isCorrect) return {score:0,penalty:0};
     const over = Math.max(0, elapsedSec - 10);
@@ -124,6 +123,7 @@
   const AUTO_ADVANCE_MS = 0;
   const NEXT_DELAY_MS = 3000; // 다음 버튼 활성화까지 대기
   let nextLock = false;
+  let triedEarlyClick = false; // 비활성 기간 중 클릭 시 감지
 
   // 문항 캐시
   let QMAP = new Map();
@@ -299,6 +299,7 @@
       $('#after-msg').style.display='none';
       $('#btnNext').style.display='none';
       $('#btnNext').disabled = true;
+      triedEarlyClick = false;
 
       // 캐시 우선
       let q = QMAP.get(Number(order));
@@ -363,17 +364,29 @@
 
   // 제출
   $('#btnSubmit').addEventListener('click', ()=> doSubmit(false));
+
+  // 다음/결과 보기
   $('#btnNext').addEventListener('click', async ()=>{
     if (meFinished || nextLock) return;
     nextLock = true;
     $('#btnNext').disabled = true;
+
+    const atLast = (totalQ>0 && (renderedIndex+1) >= totalQ);
+    if (atLast){
+      // 결과 보기
+      show('#view-end');
+      await updateTotalScore();
+      nextLock = false;
+      return;
+    }
+
     $('#after-msg').textContent = '다음 문제 불러오는 중…';
     $('#after-msg').style.display = 'block';
     try{
-      await renderQuestion(myIndexLocal);
+      // ★ 서버 진행도 대기 없이, 확정적으로 현재의 다음 인덱스로 이동
+      await renderQuestion(renderedIndex + 1);
     }finally{
       nextLock = false;
-      // renderQuestion에서 버튼을 다시 숨기고 필요 시 타이머를 재시작합니다.
     }
   });
 
@@ -407,7 +420,6 @@
     $('#after-msg').textContent = msg;
     $('#after-msg').style.display='block';
 
-    // 🔐 rid: "UID_문항번호"
     const rid = `${ME.uid}_${Number(renderedIndex)}`;
     const nowTs = firebase.firestore.FieldValue.serverTimestamp();
 
@@ -436,23 +448,38 @@
         }, {merge:true});
       });
 
-      // 로컬 진행도 +1
+      // 로컬 진행도 +1 (다음 이동은 renderedIndex+1을 사용)
       myIndexLocal = Math.max(myIndexLocal, renderedIndex + 1);
       myIndex = myIndexLocal;
 
-      // 다음으로 버튼 3초 후 활성화
+      // 마지막 여부에 따라 버튼 라벨/행동
+      const atLast = (totalQ>0 && (renderedIndex+1) >= totalQ);
+      $('#btnNext').textContent = atLast ? '결과 보기' : '다음으로';
+
+      // 다음 버튼 3초 후 활성화 (+ 비활성 기간 클릭 감지)
       $('#btnNext').style.display = 'inline-block';
       $('#btnNext').disabled = true;
-      setTimeout(()=>{ $('#btnNext').disabled = false; }, NEXT_DELAY_MS);
+      triedEarlyClick = false;
 
-      if (AUTO_ADVANCE_MS > 0) {
-        setTimeout(()=>{ if (!meFinished) renderQuestion(myIndexLocal); }, AUTO_ADVANCE_MS);
+      const enableNext = ()=>{
+        $('#btnNext').disabled = false;
+        if (triedEarlyClick){
+          // 비활성 동안 사용자가 눌렀다면 자동으로 한 번 진행시켜 체감 개선
+          $('#btnNext').click();
+        }
+      };
+      setTimeout(enableNext, NEXT_DELAY_MS);
+
+      // 자동 넘김 옵션
+      if (AUTO_ADVANCE_MS > 0 && !atLast) {
+        setTimeout(()=>{ if (!meFinished) renderQuestion(renderedIndex + 1); }, AUTO_ADVANCE_MS);
       }
     }catch(e){
       console.warn('제출 실패:', e?.message||e);
       if (/already[- ]exists/i.test(String(e?.message||''))) {
         $('#after-msg').textContent = '이미 제출된 문항입니다. 다음으로 이동하세요.';
         $('#after-msg').style.display='block';
+        $('#btnNext').textContent = (totalQ>0 && (renderedIndex+1) >= totalQ) ? '결과 보기' : '다음으로';
         $('#btnNext').style.display = 'inline-block';
         $('#btnNext').disabled = true;
         setTimeout(()=>{ $('#btnNext').disabled = false; }, NEXT_DELAY_MS);
@@ -467,22 +494,16 @@
     }
 
     $('#btnSubmit').disabled = true;
-
-    // 잠시 후 서버 상태 재확인 → 완료면 종료화면 + 총점 갱신
-    setTimeout(async ()=>{
-      $('#btnSubmit').disabled=false;
-      try{
-        const [pSnap, gSnap] = await Promise.all([playerDoc.get(), gameDoc().get()]);
-        const px = Math.max(myIndexLocal, Number((pSnap.data()||{}).progressIndex || 0));
-        const tq = Number((gSnap.data()||{}).totalQuestions || 0);
-        if (tq > 0 && px >= tq) {
-          await playerDoc.set({ finished:true }, {merge:true});
-          meFinished = true;
-          show('#view-end'); stopTimer(); updateTotalScore(); return;
-        }
-      }catch(_){}
-    }, 600);
   }
+
+  // 비활성 상태에서 '다음으로' 연타 감지
+  document.addEventListener('click', (e)=>{
+    if (e.target && e.target.id === 'btnNext' && e.target.disabled) {
+      triedEarlyClick = true;
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  });
 </script>
 </body>
 </html>
