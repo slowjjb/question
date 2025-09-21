@@ -23,6 +23,7 @@
     table{width:100%;border-collapse:collapse;margin-top:8px}
     th,td{border-bottom:1px solid var(--line);padding:8px;text-align:left;font-size:14px}
     small{color:var(--muted)}
+    .grow{flex:1}
   </style>
 </head>
 <body>
@@ -44,6 +45,7 @@
       <a href="./teacher-login.html" class="pill" style="text-decoration:none;">로그인 화면으로</a>
     </div>
 
+    <!-- 게임 상태 -->
     <div class="row card" id="gameInfo" style="display:none;align-items:center;gap:12px;">
       <div>게임 ID: <span id="gid" class="kbd"></span></div>
       <button id="btnCopy" class="ghost">ID 복사</button>
@@ -52,6 +54,24 @@
       <div class="pill">현재 문제: <span id="gindex">-</span></div>
       <div class="pill">총 문항: <span id="gtotal">0</span></div>
     </div>
+
+    <!-- 템플릿 관리 / 불러오기 -->
+    <section class="card" id="templateBox" style="display:none;">
+      <h3 style="margin:0 0 8px;">문제 세트(템플릿) 관리 & 불러오기</h3>
+      <div class="row">
+        <select id="tplSelect" class="grow"></select>
+        <button id="btnTplUse" class="ghost">선택 불러오기</button>
+        <button id="btnTplDel" class="danger">선택 삭제</button>
+        <span id="tplInfo" class="pill">미리보기: -문항</span>
+      </div>
+      <div class="row">
+        <input id="tplId" class="grow" placeholder="원본 게임 ID (예: KOR-SET-1 혹은 자동 생성 ID)" />
+        <input id="tplTitle" class="grow" placeholder="표시 이름 (예: 6학년 국어 세트 1)" />
+        <button id="btnTplAdd" class="primary">템플릿 추가(저장)</button>
+        <button id="btnTplImport" class="ghost">ID로 불러오기</button>
+      </div>
+      <small>Tips) 템플릿은 **브라우저 로컬 저장소**에 저장됩니다. 여러 세트를 만들어 두고 필요할 때 불러오세요.</small>
+    </section>
 
     <!-- 문제 에디터 -->
     <section id="editor" class="card" style="display:none;">
@@ -91,7 +111,7 @@
       </table>
     </section>
 
-    <p style="margin-top:16px;"><small>Tip) “게임 만들기” 후 문제를 추가하고, 시작/이전/다음/초기화/종료로 진행을 제어합니다.</small></p>
+    <p style="margin-top:16px;"><small>흐름) “게임 만들기” → (필요 시 템플릿 불러오기) → 문제 수정/추가 → 시작/이전/다음/초기화/종료</small></p>
   </main>
 
   <!-- Firebase CDN -->
@@ -101,24 +121,94 @@
   <script src="./js/firebase-init.js"></script>
 
   <script>
-    // 로그인 가드
+    // ───────────────── 로그인 가드
     auth.onAuthStateChanged(user => {
       const $u = document.getElementById('user');
       if (!user) { $u.textContent='로그인이 필요합니다'; location.replace('./teacher-login.html'); return; }
       $u.textContent = `로그인: ${user.displayName || user.email}`;
     });
 
-    // 유틸
+    // ───────────────── 유틸
     const $ = s => document.querySelector(s);
     function genId(len=7){ const C='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s=''; for(let i=0;i<len;i++) s+=C[Math.floor(Math.random()*C.length)]; return s; }
 
     let gameId = localStorage.getItem('q_gameId') || '';
     let unsubGame=null, unsubList=null;
 
+    // ───────────────── 템플릿(로컬 저장)
+    const TPL_KEY = 'q_templates_v1'; // [{id,title}]
+    function loadTpls(){ try { return JSON.parse(localStorage.getItem(TPL_KEY)||'[]'); } catch(_) { return []; } }
+    function saveTpls(arr){ localStorage.setItem(TPL_KEY, JSON.stringify(arr)); renderTpls(); }
+    async function previewTplCount(id){
+      try{
+        const snap = await db.collection('q_games').doc(id).collection('q_questions').get();
+        return snap.size;
+      }catch{ return null; }
+    }
+    async function renderTpls(){
+      const sel = $('#tplSelect'); sel.innerHTML='';
+      const tpls = loadTpls();
+      if (tpls.length===0) {
+        const opt = document.createElement('option'); opt.textContent='(저장된 템플릿 없음)'; opt.value='';
+        sel.appendChild(opt); $('#tplInfo').textContent = '미리보기: -문항';
+        return;
+      }
+      tpls.forEach(t=>{
+        const opt = document.createElement('option'); opt.value = t.id; opt.textContent = `${t.title}  (${t.id})`;
+        sel.appendChild(opt);
+      });
+      // 선택 시 정보 갱신
+      sel.onchange = async ()=>{
+        const id = sel.value;
+        if (!id) { $('#tplInfo').textContent='미리보기: -문항'; return; }
+        const n = await previewTplCount(id);
+        $('#tplInfo').textContent = `미리보기: ${n ?? '?'}문항`;
+      };
+      sel.dispatchEvent(new Event('change'));
+    }
+
+    async function copyQuestions(srcId, destId) {
+      if (!srcId) throw new Error('원본 게임 ID가 없습니다.');
+      if (srcId === destId) throw new Error('같은 게임으로는 복사할 수 없습니다.');
+
+      const srcQ = db.collection('q_games').doc(srcId).collection('q_questions').orderBy('order','asc');
+      const dstQ = db.collection('q_games').doc(destId).collection('q_questions');
+
+      // 1) 현재 문제들 삭제
+      const exist = await dstQ.get();
+      if (!exist.empty) {
+        let b = db.batch(); let n=0;
+        exist.forEach(d=>{ b.delete(dstQ.doc(d.id)); n++; if(n%400===0){ b.commit(); b=db.batch(); } });
+        await b.commit();
+      }
+
+      // 2) 복사
+      const snap = await srcQ.get();
+      let b = db.batch(), i=0;
+      snap.forEach(doc=>{
+        const q=doc.data();
+        b.set(dstQ.doc(), {
+          type:q.type, prompt:q.prompt, choices:q.choices||null, answer:q.answer,
+          order: (typeof q.order==='number'? q.order : i)
+        });
+        i++; if(i%400===0){ b.commit(); b=db.batch(); }
+      });
+      await b.commit();
+
+      // 3) 총 문항/상태 초기화
+      await db.collection('q_games').doc(destId).set({
+        totalQuestions: snap.size, status:'waiting', currentIndex:-1
+      }, {merge:true});
+
+      return snap.size;
+    }
+
+    // ───────────────── 게임 UI 바인딩
     function ensureUI(){
       if (!gameId) return;
       $('#gid').textContent = gameId;
       $('#gameInfo').style.display='flex';
+      $('#templateBox').style.display='block';
       $('#editor').style.display='block';
       $('#list').style.display='block';
 
@@ -133,7 +223,7 @@
         $('#gindex').textContent  = idx;
         $('#gtotal').textContent  = total;
 
-        // 버튼 상태 제어
+        // 버튼 상태
         $('#btnStart').disabled = !(g.status==='waiting' && total>0);
         $('#btnPrev').disabled  = !(g.status==='running' && idx>0);
         $('#btnNext').disabled  = !(g.status==='running' && idx < total-1);
@@ -165,7 +255,7 @@
         });
     }
 
-    // 게임 만들기
+    // ───────────────── 상단 버튼
     $('#btnCreate').addEventListener('click', async ()=>{
       const user=auth.currentUser; if(!user) return alert('로그인이 필요합니다');
       gameId = genId(7);
@@ -180,11 +270,7 @@
       ensureUI();
       alert('게임이 생성되었습니다. 학생에게 게임 ID를 전달하세요.');
     });
-
-    // 버튼 동작
-    $('#btnCopy').addEventListener('click', async ()=>{
-      try{ await navigator.clipboard.writeText(gameId); alert('게임 ID 복사됨'); }catch{ alert('복사 실패');}
-    });
+    $('#btnCopy').addEventListener('click', async ()=>{ try{ await navigator.clipboard.writeText(gameId); alert('게임 ID 복사됨'); }catch{ alert('복사 실패'); } });
     $('#btnSignOut').addEventListener('click', async ()=>{ await auth.signOut(); location.replace('./teacher-login.html'); });
 
     $('#btnStart').addEventListener('click', async ()=>{
@@ -192,40 +278,31 @@
       const gref = db.collection('q_games').doc(gameId);
       await gref.set({ status:'running', currentIndex:0, questionStartAt: firebase.firestore.FieldValue.serverTimestamp() }, {merge:true});
     });
-
     $('#btnPrev').addEventListener('click', async ()=>{
       const gref = db.collection('q_games').doc(gameId);
       const g=(await gref.get()).data(); const idx=Number(g.currentIndex??0);
       if (idx<=0) return;
       await gref.set({ currentIndex: idx-1, questionStartAt: firebase.firestore.FieldValue.serverTimestamp() }, {merge:true});
     });
-
     $('#btnNext').addEventListener('click', async ()=>{
       const gref = db.collection('q_games').doc(gameId);
       const g=(await gref.get()).data();
       const total = Number(g.totalQuestions||0);
       const next  = Number(g.currentIndex||0) + 1;
       if (next >= total) {
-        // 마지막을 넘지 않도록: 자동 종료
         await gref.set({ status:'ended' }, {merge:true});
         alert('마지막 문제까지 완료되어 게임을 종료했습니다.');
       } else {
         await gref.set({ currentIndex: next, questionStartAt: firebase.firestore.FieldValue.serverTimestamp() }, {merge:true});
       }
     });
-
     $('#btnReset').addEventListener('click', async ()=>{
       if(!confirm('게임을 대기 상태로 초기화할까요? (현재 진행 위치가 초기화됩니다)')) return;
-      const gref = db.collection('q_games').doc(gameId);
-      await gref.set({ status:'waiting', currentIndex:-1 }, {merge:true});
+      await db.collection('q_games').doc(gameId).set({ status:'waiting', currentIndex:-1 }, {merge:true});
     });
+    $('#btnEnd').addEventListener('click', async ()=>{ await db.collection('q_games').doc(gameId).set({ status:'ended' }, {merge:true}); });
 
-    $('#btnEnd').addEventListener('click', async ()=>{
-      const gref = db.collection('q_games').doc(gameId);
-      await gref.set({ status:'ended' }, {merge:true});
-    });
-
-    // 문제 에디터
+    // ───────────────── 문제 에디터
     const $choices = () => [...document.querySelectorAll('[data-chidx]')];
     function renderChoiceInputs(n=4){
       const wrap=document.querySelector('#choices'); wrap.innerHTML='';
@@ -243,7 +320,6 @@
       $('#qcount').disabled = (type!=='mcq');
       $('#choices').style.display = (type==='mcq') ? 'block' : 'none';
     });
-
     $('#btnAdd').addEventListener('click', async ()=>{
       if(!gameId) return alert('먼저 게임을 만드세요.');
       const type=$('#qtype').value, prompt=$('#qprompt').value.trim(), answer=$('#qanswer').value.trim();
@@ -261,6 +337,44 @@
       $('#qprompt').value=''; $('#qanswer').value=''; $choices().forEach(i=>i.value='');
     });
 
+    // ───────────────── 템플릿 UI/행동
+    $('#btnTplAdd').addEventListener('click', ()=>{
+      const id=$('#tplId').value.trim(); const title=$('#tplTitle').value.trim();
+      if(!id || !title){ alert('ID와 표시 이름을 입력하세요.'); return; }
+      const list=loadTpls();
+      if(list.some(t=>t.id===id)){ alert('이미 저장된 ID입니다.'); return; }
+      list.push({id, title}); saveTpls(list);
+      $('#tplId').value=''; $('#tplTitle').value='';
+    });
+    $('#btnTplDel').addEventListener('click', ()=>{
+      const id=$('#tplSelect').value; if(!id){ alert('삭제할 템플릿을 선택하세요.'); return; }
+      const list=loadTpls().filter(t=>t.id!==id); saveTpls(list);
+    });
+    $('#btnTplUse').addEventListener('click', async ()=>{
+      const id=$('#tplSelect').value; if(!id){ alert('템플릿을 선택하세요.'); return; }
+      if(!gameId){ alert('먼저 게임을 만드세요.'); return; }
+      if(!confirm('현재 게임의 문제를 모두 지우고 템플릿에서 복사합니다. 계속할까요?')) return;
+      try{
+        const n = await copyQuestions(id, gameId);
+        alert(`복사 완료! (${n}문항)`);
+      }catch(e){ alert('복사 실패: '+e.message); console.error(e); }
+    });
+    $('#btnTplImport').addEventListener('click', async ()=>{
+      const id=$('#tplId').value.trim(); if(!id){ alert('원본 게임 ID를 입력하세요.'); return; }
+      if(!gameId){ alert('먼저 게임을 만드세요.'); return; }
+      if(!confirm('현재 게임의 문제를 모두 지우고 복사합니다. 계속할까요?')) return;
+      try{
+        const n = await copyQuestions(id, gameId);
+        alert(`복사 완료! (${n}문항)`);
+      }catch(e){ alert('복사 실패: '+e.message); console.error(e); }
+    });
+    $('#tplSelect').addEventListener('change', async ()=>{
+      const id=$('#tplSelect').value; if(!id){ $('#tplInfo').textContent='미리보기: -문항'; return; }
+      const n = await previewTplCount(id); $('#tplInfo').textContent = `미리보기: ${n ?? '?'}문항`;
+    });
+
+    // 초기 바인딩
+    renderTpls();
     if (gameId) ensureUI();
   </script>
 </body>
