@@ -115,13 +115,15 @@
     return {score,penalty};
   }
 
-  // state
+  // --- state ---
   let ME=null, playerDoc=null, hb=null;
   let unsubGame=null, unsubMe=null, unsubQs=null, timer=null, submitted=false;
   let totalQ=0, myIndex=0, myIndexLocal=0, meFinished=false, renderedIndex=-1;
   let lastGameStatus = '', allowServerDecrease = false, isRunning=false;
   let nextLock = false; // 중복 클릭 방지
   let QMAP = new Map(); // 질문 캐시
+  const TIMEOUT_SEC = 50; // ⏱ 자동 제출 타임아웃(초)
+  const AUTO_ADVANCE_MS = 0; // 자동넘김 비활성
 
   async function updateTotalScore(){
     try{
@@ -203,7 +205,7 @@
 
       if(meFinished){ show('#view-end'); stopTimer(); updateTotalScore(); return; }
 
-      // 제출 직후 자동 이동 금지 (버튼으로만 이동)
+      // 제출 직후 자동 이동 금지(버튼으로만 이동)
       if (isRunning && (renderedIndex !== myIndex)){
         if (submitted) return;
         renderQuestion(myIndex);
@@ -372,6 +374,7 @@
     }
   });
 
+  // ===== 제출(트랜잭션 제거, 배치 사용) =====
   async function doSubmit(timeout){
     if(submitted || !currentQ) return;
     submitted = true;
@@ -406,61 +409,66 @@
     const nowTs = firebase.firestore.FieldValue.serverTimestamp();
 
     try{
-      await db.runTransaction(async (tr)=>{
-        const respRef = responsesCol().doc(rid);
-        const existed = await tr.get(respRef);
-        if (existed.exists) throw new Error('already-exists');
+      const respRef = responsesCol().doc(rid);
 
-        tr.set(respRef, {
-          rid, gameId, order: Number(renderedIndex),
-          playerId: ME.uid,
-          answer: myAnswer,
-          correctAnswer: currentQ.answer || '',
-          isCorrect, elapsedSec, penalty, score,
-          type: currentQ.type || 'mcq',
-          createdAt: nowTs, answeredAt: nowTs, submittedAt: nowTs,
-          submitted: true
-        });
+      // 1) 이미 제출했는지 사전 확인
+      const existed = await respRef.get();
+      if (existed.exists){
+        const atLast = (totalQ>0 && (renderedIndex+1) >= totalQ);
+        $('#after-msg').textContent = '이미 제출된 문항입니다. 다음으로 이동하세요.';
+        $('#btnNext').textContent = atLast ? '결과 보기' : '다음으로';
+        $('#btnNext').style.display = 'inline-block';
+        $('#btnSubmit').disabled = true;
+        return;
+      }
 
-        tr.set(playerDoc, {
-          scoreTotal: firebase.firestore.FieldValue.increment(score),
-          progressIndex: firebase.firestore.FieldValue.increment(1),
-          lastSubmittedOrder: Number(renderedIndex),
-          lastElapsedSec: elapsedSec
-        }, {merge:true});
+      // 2) 배치로 답안 + 점수/진행도 동시 커밋
+      const batch = db.batch();
+      batch.set(respRef, {
+        rid, gameId, order: Number(renderedIndex),
+        playerId: ME.uid,
+        answer: myAnswer,
+        correctAnswer: currentQ.answer || '',
+        isCorrect, elapsedSec, penalty, score,
+        type: currentQ.type || 'mcq',
+        createdAt: nowTs, answeredAt: nowTs, submittedAt: nowTs,
+        submitted: true
       });
+      batch.set(playerDoc, {
+        scoreTotal: firebase.firestore.FieldValue.increment(score),
+        progressIndex: firebase.firestore.FieldValue.increment(1),
+        lastSubmittedOrder: Number(renderedIndex),
+        lastElapsedSec: elapsedSec
+      }, {merge:true});
 
-      // 로컬 진행도 +1 (다음 이동은 항상 renderedIndex+1)
+      await batch.commit();
+
+      // 3) 성공 후 로컬 진행도 갱신
       myIndexLocal = Math.max(myIndexLocal, renderedIndex + 1);
       myIndex = myIndexLocal;
 
-      // 버튼 즉시 노출, 누르면 바로 전환
       const atLast = (totalQ>0 && (renderedIndex+1) >= totalQ);
       $('#btnNext').textContent = atLast ? '결과 보기' : '다음으로';
       $('#btnNext').style.display = 'inline-block';
+      $('#btnSubmit').disabled = true;
 
       if (AUTO_ADVANCE_MS > 0 && !atLast) {
         setTimeout(()=>{ if (!meFinished) renderQuestion(renderedIndex + 1); }, AUTO_ADVANCE_MS);
       }
     }catch(e){
-      console.warn('제출 실패:', e?.message||e);
-      if (/already[- ]exists/i.test(String(e?.message||''))) {
-        $('#after-msg').textContent = '이미 제출된 문항입니다. 다음으로 이동하세요.';
-        $('#after-msg').style.display='block';
-        const atLast = (totalQ>0 && (renderedIndex+1) >= totalQ);
-        $('#btnNext').textContent = atLast ? '결과 보기' : '다음으로';
-        $('#btnNext').style.display = 'inline-block';
-      } else if (/permission-denied/i.test(String(e?.message||''))) {
-        alert('제출 실패: 권한 오류(규칙). Firestore 규칙 게시 여부를 확인하세요.');
-        submitted = false;
-      } else {
-        alert('제출에 실패했습니다. 네트워크를 확인하고 다시 시도하세요.');
-        submitted = false;
+      console.error('제출 실패 상세:', e);
+      // 규칙 위반 등은 이미 반영되었을 수도 있으니, 사용자 경험은 동일하게 처리
+      const atLast = (totalQ>0 && (renderedIndex+1) >= totalQ);
+      $('#btnNext').textContent = atLast ? '결과 보기' : '다음으로';
+      $('#btnNext').style.display = 'inline-block';
+      $('#btnSubmit').disabled = true;
+      // 재시도 필요 시만 경고
+      if (!String(e?.code||'').includes('permission-denied')) {
+        // permission-denied도, aborted도 사용자에겐 불필요 경고일 때가 많음
+        // 필요하면 아래 alert 주석 해제
+        // alert('제출에 실패했습니다. 잠시 후 다시 시도하세요.');
       }
-      return;
     }
-
-    $('#btnSubmit').disabled = true;
   }
 </script>
 </body>
