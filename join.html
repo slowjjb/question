@@ -1,1 +1,84 @@
-placeholder
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>게임 참가 (Join)</title>
+  <style>
+    :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, "Noto Sans KR", sans-serif; }
+    body { margin:0; background:#0f172a; color:#fff; display:grid; place-items:center; min-height:100vh; }
+    .card { background:#111827; border:1px solid #374151; border-radius:16px; padding:24px; width:92%; max-width:420px; }
+    h1 { margin:0 0 8px; font-size:20px; }
+    .row { display:flex; gap:10px; margin:10px 0; }
+    .row input { flex:1; padding:10px 12px; border-radius:10px; border:1px solid #334155; background:#0b1220; color:#fff; }
+    button { width:100%; padding:12px 14px; border-radius:10px; border:0; font-weight:800; cursor:pointer; background:#22c55e; color:#08210f; }
+    .muted { font-size:12px; opacity:.8; margin-top:8px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>게임 참가</h1>
+    <div class="row"><input id="class"  placeholder="학급 (예: 6-1)" /></div>
+    <div class="row"><input id="number" placeholder="번호 (예: 12)" inputmode="numeric" /></div>
+    <div class="row"><input id="name"   placeholder="이름 (예: 홍길동)" /></div>
+    <div class="row"><input id="gameId" placeholder="게임 ID (교사가 알려준 값)" /></div>
+    <button id="btnJoin">참가하기</button>
+    <div class="muted">※ 참가하면 대기 화면으로 이동합니다.</div>
+  </div>
+
+  <!-- Firebase CDN (compat) -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+  <!-- 공통 초기화 -->
+  <script src="./js/firebase-init.js"></script>
+
+  <script>
+    // 페이지 로드 시 익명 로그인 보장
+    auth.onAuthStateChanged(async (user) => {
+      if (!user) {
+        try { await auth.signInAnonymously(); } 
+        catch (e) { alert('로그인 준비에 실패했습니다: ' + e.message); }
+      }
+    });
+
+    document.getElementById('btnJoin').addEventListener('click', async () => {
+      const cls = document.getElementById('class').value.trim();
+      const num = document.getElementById('number').value.trim();
+      const nm  = document.getElementById('name').value.trim();
+      const gid = document.getElementById('gameId').value.trim();
+
+      if (!cls || !num || !nm || !gid) {
+        alert('학급, 번호, 이름, 게임 ID를 모두 입력하세요.');
+        return;
+      }
+      const user = auth.currentUser;
+      if (!user) { alert('로그인 준비 중입니다. 잠시 후 다시 시도하세요.'); return; }
+
+      try {
+        const pid = user.uid; // 규칙에 맞춰 문서 ID = uid
+        const playerDoc = {
+          pid,
+          class: cls,
+          number: Number(num) || num,
+          name: nm,
+          joinedAt: firebase.firestore.FieldValue.serverTimestamp(),
+          scoreTotal: 0
+        };
+        await db.collection('q_games').doc(gid)
+                .collection('q_players').doc(pid).set(playerDoc, { merge: true });
+
+        // 다음 페이지에서 참조할 수 있도록 저장
+        localStorage.setItem('q_gameId', gid);
+        localStorage.setItem('q_playerId', pid);
+
+        // 게임 화면으로 이동
+        location.href = `./game.html?game=${encodeURIComponent(gid)}`;
+      } catch (err) {
+        alert('참가에 실패했습니다: ' + err.message);
+        console.error(err);
+      }
+    });
+  </script>
+</body>
+</html>
