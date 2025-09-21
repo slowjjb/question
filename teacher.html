@@ -62,6 +62,7 @@
       <div class="pill">상태: <span id="gstatus">-</span></div>
       <div class="pill">현재 문제: <span id="gindex">-</span></div>
       <div class="pill">총 문항: <span id="gtotal">0</span></div>
+      <div class="pill">응답: <span id="gresp">0</span>/<span id="gonline">0</span></div>
     </div>
 
     <!-- 템플릿 관리 / 불러오기 -->
@@ -274,6 +275,9 @@
       if (autoTick){ clearInterval(autoTick); autoTick = null; }
       if (respUnsubAuto){ respUnsubAuto(); respUnsubAuto = null; }
       if (playerUnsubAuto){ playerUnsubAuto(); playerUnsubAuto = null; }
+      // UI 초기화
+      $('#gonline').textContent = '0';
+      $('#gresp').textContent = '0';
     }
 
     async function goNextFromAuto(idx){
@@ -312,6 +316,7 @@
             if (p.active === true || (last && (now - last) < 40000)) activeCount++;
           });
           playersCnt = activeCount;
+          $('#gonline').textContent = String(playersCnt);
         });
 
       // 2) 현재 문항의 제출 집계: '시작 이후' + '제출 완료'만 인정
@@ -326,14 +331,13 @@
           s.forEach(d=>{
             const r = d.data(); if (!r) return;
 
-            // 학생이 기록하는 제출시각(선호) → 없으면 answeredAt → createdAt 폴백
+            // 학생이 기록하는 제출시각(선호) → 없으면 answeredAt → createdAt
             const subMs =
               (r.submittedAt && r.submittedAt.toMillis ? r.submittedAt.toMillis() : 0) ||
               (r.answeredAt   && r.answeredAt.toMillis   ? r.answeredAt.toMillis()   : 0) ||
               (r.createdAt    && r.createdAt.toMillis    ? r.createdAt.toMillis()    : 0);
 
             const isAfterStart = startMs ? (subMs >= startMs - 500) : true;
-
             const submittedFlag = r.submitted === true || !!subMs;
             const hasPlayer = !!r.playerId;
 
@@ -341,6 +345,8 @@
               responded.add(r.playerId);
             }
           });
+
+          $('#gresp').textContent = String(responded.size);
 
           if (!autoFired && playersCnt > 0 && responded.size >= playersCnt) {
             autoFired = true;
@@ -450,6 +456,8 @@
       $('#editor').style.display='block';
       $('#list').style.display='block';
       $('#scoreboard').style.display='block';
+      $('#gonline').textContent = '0';
+      $('#gresp').textContent = '0';
       bindScoreboard();
 
       if (unsubGame) unsubGame();
@@ -544,6 +552,7 @@
       const gref = db.collection('q_games').doc(gameId);
       const g=(await gref.get()).data(); const idx=Number(g.currentIndex??0);
       if (idx<=0) return;
+      killAutoWatchers();
       await gref.set({
         currentIndex: idx-1,
         questionStartAt: firebase.firestore.FieldValue.serverTimestamp()
@@ -556,6 +565,7 @@
       const g=(await gref.get()).data();
       const total = Number(g.totalQuestions||0);
       const next  = Number(g.currentIndex||0) + 1;
+      killAutoWatchers();
       if (next >= total) {
         await gref.set({ status:'ended' }, {merge:true});
         alert('마지막 문제까지 완료되어 게임을 종료했습니다.');
