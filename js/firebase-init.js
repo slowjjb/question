@@ -1,11 +1,11 @@
 // Firebase 초기화 스크립트
 const firebaseConfig = {
-  apiKey: "AIzaSyCUmSDDCnf45ZHZUigbspothE6iD2iC7Y",
-  authDomain: "grade-6-english-c173.firebaseapp.com",
-  projectId: "grade-6-english-c173",
-  storageBucket: "grade-6-english-c173.appspot.com",
-  messagingSenderId: "767630583950",
-  appId: "1:767630583950:web:a5399633e7b828883fe533"
+  apiKey: "AIzaSyCUmSDDcFn45Z_ZH3UigbsothE6iD21C7Y",
+  authDomain: "grade-6-english-c17f3.firebaseapp.com",
+  projectId: "grade-6-english-c17f3",
+  storageBucket: "grade-6-english-c17f3.firebasestorage.app",
+  messagingSenderId: "676305839050",
+  appId: "1:676305839050:web:a5399633e7b828883fe533"
 };
 
 // 중복 초기화 방지
