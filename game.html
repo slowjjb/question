@@ -85,7 +85,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script src="./js/firebase-init.js"></script>
 <script>
-  // ── helpers
+  // helpers
   const $=s=>document.querySelector(s);
   function getQuery(k){const u=new URL(location.href);return u.searchParams.get(k)}
   const gameId = getQuery('game') || localStorage.getItem('q_gameId') || '';
@@ -101,7 +101,7 @@
     $(id).style.display='block';
   }
 
-  // 점수 규칙(정답일 때만): 10초부터 10초마다 -1, 최대 -5
+  // 점수 계산
   function calcScore(isCorrect, elapsedSec){
     if(!isCorrect) return {score:0,penalty:0};
     const over = Math.max(0, elapsedSec - 10);
@@ -111,19 +111,20 @@
     return {score,penalty};
   }
 
-  // ── 상태
+  // 상태
   let ME=null, playerDoc=null, hb=null;
   let unsubGame=null, unsubMe=null, timer=null, submitted=false;
   let totalQ=0, myIndex=0, myIndexLocal=0, meFinished=false, renderedIndex=-1;
 
   let lastGameStatus = '';
   let allowServerDecrease = false;
-  let isRunning = false; // ★ 변경: running 상태 플래그
+  let isRunning = false;
 
-  const TIMEOUT_SEC = 50;      // 50초 자동제출
-  const AUTO_ADVANCE_MS = 0;   // 자동넘김 비활성(“다음으로” 눌러 이동)
+  const TIMEOUT_SEC = 50;
+  const AUTO_ADVANCE_MS = 0;
+  const NEXT_DELAY_MS = 3000;   // ← 요청하신 3초
 
-  // ── presence heartbeat
+  // heartbeat
   async function startHeartbeat(){
     const push = () => playerDoc.set({
       active:true, lastSeenAt: firebase.firestore.FieldValue.serverTimestamp()
@@ -139,7 +140,7 @@
     }catch(_){}
   }
 
-  // ── auth
+  // auth
   auth.onAuthStateChanged(async (u)=>{
     try{
       if(!u) u = (await auth.signInAnonymously()).user;
@@ -175,7 +176,7 @@
     }
   });
 
-  // ── 내 진행도/완료 바인딩
+  // 내 진행도 바인딩
   function bindMe(){
     if(unsubMe) unsubMe();
     unsubMe = playerDoc.onSnapshot(s=>{
@@ -199,14 +200,15 @@
 
       if(meFinished){ show('#view-end'); stopTimer(); return; }
 
-      // ★ 변경: running 상태에서만 문제 렌더
-      if (isRunning && (renderedIndex !== myIndex)){
+      // 제출 직후에는 자동 이동 금지 (버튼으로만 이동)
+      if (isRunning && (renderedIndex !== myIndex)) {
+        if (submitted) return;
         renderQuestion(myIndex);
       }
     });
   }
 
-  // ── game binding
+  // 게임 바인딩
   function bindGame(){
     if(!gameId){ $('#wait-text').textContent='게임 ID 없음: join 화면에서 다시 입장해 주세요.'; show('#view-wait'); return; }
 
@@ -218,7 +220,7 @@
       const status = g.status || '-';
       $('#gstatus').textContent = status;
 
-      isRunning = (status === 'running'); // ★ 변경: 상태 플래그 갱신
+      isRunning = (status === 'running');
 
       totalQ = Number(g.totalQuestions || 0);
       if (totalQ>0) $('#gindex').textContent = `${Math.min(myIndex+1,totalQ)}/${totalQ}`;
@@ -229,9 +231,11 @@
           allowServerDecrease = true;
           meFinished = false;
           renderedIndex = -1;
+          submitted = false; // 상태 초기화
           show('#view-wait'); stopTimer();
         } else if (status === 'running' && lastGameStatus === 'waiting'){
           allowServerDecrease = true;
+          submitted = false; // 첫 문제 자동 렌더 허용
         }
         lastGameStatus = status;
       }
@@ -240,19 +244,19 @@
       if(status==='ended'){ show('#view-end'); stopTimer(); return; }
 
       if(!meFinished){
-        // ★ 변경: running일 때만 렌더 시도
-        if (isRunning && renderedIndex !== myIndex) renderQuestion(myIndex);
+        if (isRunning && renderedIndex !== myIndex) {
+          if (submitted) return;
+          renderQuestion(myIndex);
+        }
       }
     });
   }
 
-  // ── 문제 표시
+  // 문제 표시
   let currentQ=null, currentQid=null;
   async function renderQuestion(order){
     try{
-      // ★ 변경: 안전 가드 — running 아닐 때는 강제로 대기로
       if (!isRunning) { show('#view-wait'); return; }
-
       if (order < 0) order = 0;
 
       if (totalQ > 0 && order >= totalQ){
@@ -265,14 +269,11 @@
       submitted=false;
       $('#after-msg').style.display='none';
       $('#btnNext').style.display='none';
-      $('#btnNext').disabled = true; // 다음 버튼 기본 비활성화
+      $('#btnNext').disabled = true;
 
       const qSnap = await questionsCol().where('order','==', Number(order)).limit(1).get();
-      if(qSnap.empty){
-        // 로딩 지연 시 대기 화면만 보여주고 종료 금지
-        show('#view-wait');
-        return;
-      }
+      if(qSnap.empty){ show('#view-wait'); return; }
+
       const qDoc = qSnap.docs[0];
       const q = qDoc.data();
       currentQ = q;
@@ -333,7 +334,6 @@
   $('#btnSubmit').addEventListener('click', ()=> doSubmit(false));
   $('#btnNext').addEventListener('click', ()=>{
     if (meFinished) return;
-    // 최소 지연 후 활성화되므로 여기선 그대로 렌더
     renderQuestion(myIndexLocal);
   });
 
@@ -367,7 +367,7 @@
     $('#after-msg').textContent = msg;
     $('#after-msg').style.display='block';
 
-    // 🔐 보안규칙과 일치: rid는 "UID_문항번호" 고정
+    // rid: "UID_문항번호"
     const rid = `${ME.uid}_${Number(renderedIndex)}`;
     const nowTs = firebase.firestore.FieldValue.serverTimestamp();
 
@@ -375,7 +375,6 @@
       await db.runTransaction(async (tr)=>{
         const respRef = responsesCol().doc(rid);
 
-        // Transaction에는 create() 없음 → 존재 확인 후 set()
         const existed = await tr.get(respRef);
         if (existed.exists) throw new Error('already-exists');
 
@@ -386,9 +385,7 @@
           correctAnswer: currentQ.answer || '',
           isCorrect, elapsedSec, penalty, score,
           type: currentQ.type || 'mcq',
-          createdAt: nowTs,
-          answeredAt: nowTs,
-          submittedAt: nowTs,
+          createdAt: nowTs, answeredAt: nowTs, submittedAt: nowTs,
           submitted: true
         });
 
@@ -400,14 +397,14 @@
         }, {merge:true});
       });
 
-      // 성공한 경우에만 로컬 진행도 +1
+      // 로컬 진행도 +1
       myIndexLocal = Math.max(myIndexLocal, renderedIndex + 1);
       myIndex = myIndexLocal;
 
-      // ★ 변경: 다음으로 버튼을 2초간 비활성화하여 최소 체류시간 확보
+      // 다음으로 버튼 3초 후 활성화
       $('#btnNext').style.display = 'inline-block';
       $('#btnNext').disabled = true;
-      setTimeout(()=>{ $('#btnNext').disabled = false; }, 2000); // 2초 대기
+      setTimeout(()=>{ $('#btnNext').disabled = false; }, NEXT_DELAY_MS);
 
       if (AUTO_ADVANCE_MS > 0) {
         setTimeout(()=>{ if (!meFinished) renderQuestion(myIndexLocal); }, AUTO_ADVANCE_MS);
@@ -419,20 +416,20 @@
         $('#after-msg').style.display='block';
         $('#btnNext').style.display = 'inline-block';
         $('#btnNext').disabled = true;
-        setTimeout(()=>{ $('#btnNext').disabled = false; }, 2000); // 동일 정책 적용
+        setTimeout(()=>{ $('#btnNext').disabled = false; }, NEXT_DELAY_MS);
       } else if (/permission-denied/i.test(String(e?.message||''))) {
         alert('제출 실패: 권한 오류(규칙). Firestore 규칙 게시 여부를 확인하세요.');
         submitted = false;
       } else {
         alert('제출에 실패했습니다. 네트워크를 확인하고 다시 시도하세요.');
-        submitted = false; // 재시도 가능
+        submitted = false;
       }
       return;
     }
 
     $('#btnSubmit').disabled = true;
 
-    // 잠시 후 서버 상태 재확인 → 완료면 종료화면
+    // 잠시 후 서버 상태 재확인 → 완료면 종료
     setTimeout(async ()=>{
       $('#btnSubmit').disabled=false;
       try{
