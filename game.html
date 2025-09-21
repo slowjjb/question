@@ -82,10 +82,12 @@
 
 </div>
 
-<!-- Firebase -->
+<!-- Firebase (순서 중요) -->
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script src="./js/firebase-init.js"></script>
+
 <script>
   // helpers
   const $=s=>document.querySelector(s);
@@ -93,6 +95,7 @@
   const gameId = getQuery('game') || localStorage.getItem('q_gameId') || '';
   $('#gid').textContent = $('#gid2').textContent = $('#gid3').textContent = gameId || '(없음)';
 
+  // Firestore refs
   const playersCol = ()=>db.collection('q_games').doc(gameId).collection('q_players');
   const questionsCol = ()=>db.collection('q_games').doc(gameId).collection('q_questions');
   const responsesCol = ()=>db.collection('q_games').doc(gameId).collection('q_responses');
@@ -117,13 +120,8 @@
   let unsubGame=null, unsubMe=null, unsubQs=null, timer=null, submitted=false;
   let totalQ=0, myIndex=0, myIndexLocal=0, meFinished=false, renderedIndex=-1;
   let lastGameStatus = '', allowServerDecrease = false, isRunning=false;
-
-  const TIMEOUT_SEC = 50;
-  const AUTO_ADVANCE_MS = 0;
   let nextLock = false; // 중복 클릭 방지
-
-  // cache
-  let QMAP = new Map();
+  let QMAP = new Map(); // 질문 캐시
 
   async function updateTotalScore(){
     try{
@@ -132,7 +130,7 @@
     }catch(_){}
   }
 
-  // heartbeat
+  // presence heartbeat
   async function startHeartbeat(){
     const push = () => playerDoc.set({
       active:true, lastSeenAt: firebase.firestore.FieldValue.serverTimestamp()
@@ -182,7 +180,7 @@
     }
   });
 
-  // me binding
+  // my progress binding
   function bindMe(){
     if(unsubMe) unsubMe();
     unsubMe = playerDoc.onSnapshot(s=>{
@@ -213,7 +211,7 @@
     });
   }
 
-  // game binding
+  // game state binding
   function bindGame(){
     if(!gameId){ $('#wait-text').textContent='게임 ID 없음: join 화면에서 다시 입장해 주세요.'; show('#view-wait'); return; }
 
@@ -271,7 +269,7 @@
     });
   }
 
-  // render question
+  // render a question
   let currentQ=null;
   async function renderQuestion(order){
     try{
