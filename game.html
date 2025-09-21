@@ -74,7 +74,10 @@
   <!-- 종료 -->
   <div id="view-end" class="card center" style="display:none">
     <div>문제를 모두 풀었습니다! 👏</div>
-    <div style="margin-top:10px">게임 ID: <span id="gid3" class="kbd"></span></div>
+    <div class="row" style="margin-top:10px;gap:10px">
+      <div>게임 ID: <span id="gid3" class="kbd"></span></div>
+      <div class="pill">총점: <span id="totalScore">0</span></div>
+    </div>
   </div>
 
 </div>
@@ -85,7 +88,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script src="./js/firebase-init.js"></script>
 <script>
-  // helpers
+  // ── helpers
   const $=s=>document.querySelector(s);
   function getQuery(k){const u=new URL(location.href);return u.searchParams.get(k)}
   const gameId = getQuery('game') || localStorage.getItem('q_gameId') || '';
@@ -101,7 +104,7 @@
     $(id).style.display='block';
   }
 
-  // 점수 계산
+  // 점수 규칙(정답일 때만): 10초부터 10초마다 -1, 최대 -5
   function calcScore(isCorrect, elapsedSec){
     if(!isCorrect) return {score:0,penalty:0};
     const over = Math.max(0, elapsedSec - 10);
@@ -111,20 +114,29 @@
     return {score,penalty};
   }
 
-  // 상태
+  // ── 상태
   let ME=null, playerDoc=null, hb=null;
-  let unsubGame=null, unsubMe=null, timer=null, submitted=false;
+  let unsubGame=null, unsubMe=null, unsubQs=null, timer=null, submitted=false;
   let totalQ=0, myIndex=0, myIndexLocal=0, meFinished=false, renderedIndex=-1;
-
-  let lastGameStatus = '';
-  let allowServerDecrease = false;
-  let isRunning = false;
+  let lastGameStatus = '', allowServerDecrease = false, isRunning=false;
 
   const TIMEOUT_SEC = 50;
   const AUTO_ADVANCE_MS = 0;
-  const NEXT_DELAY_MS = 3000;   // ← 요청하신 3초
+  const NEXT_DELAY_MS = 3000; // 다음 버튼 활성화까지 대기
+  let nextLock = false;
 
-  // heartbeat
+  // 문항 캐시
+  let QMAP = new Map();
+
+  async function updateTotalScore(){
+    try{
+      const snap = await playerDoc.get();
+      const sc = Number((snap.data()||{}).scoreTotal||0);
+      $('#totalScore').textContent = sc;
+    }catch(_){}
+  }
+
+  // ── presence heartbeat
   async function startHeartbeat(){
     const push = () => playerDoc.set({
       active:true, lastSeenAt: firebase.firestore.FieldValue.serverTimestamp()
@@ -140,7 +152,7 @@
     }catch(_){}
   }
 
-  // auth
+  // ── auth
   auth.onAuthStateChanged(async (u)=>{
     try{
       if(!u) u = (await auth.signInAnonymously()).user;
@@ -176,12 +188,11 @@
     }
   });
 
-  // 내 진행도 바인딩
+  // ── 내 진행도/완료 바인딩
   function bindMe(){
     if(unsubMe) unsubMe();
     unsubMe = playerDoc.onSnapshot(s=>{
       const d = s.data() || {};
-
       if (!meFinished && d.finished === true) meFinished = true;
 
       const serverIdx = Number(d.progressIndex || 0);
@@ -198,17 +209,19 @@
       if (totalQ>0) $('#gindex').textContent = `${Math.min(myIndex+1,totalQ)}/${totalQ}`;
       else $('#gindex').textContent = `${myIndex+1}/?`;
 
-      if(meFinished){ show('#view-end'); stopTimer(); return; }
+      if(meFinished){
+        show('#view-end'); stopTimer(); updateTotalScore(); return;
+      }
 
-      // 제출 직후에는 자동 이동 금지 (버튼으로만 이동)
-      if (isRunning && (renderedIndex !== myIndex)) {
+      // 제출 직후 자동 이동 금지 (버튼으로만 이동)
+      if (isRunning && (renderedIndex !== myIndex)){
         if (submitted) return;
         renderQuestion(myIndex);
       }
     });
   }
 
-  // 게임 바인딩
+  // ── game binding
   function bindGame(){
     if(!gameId){ $('#wait-text').textContent='게임 ID 없음: join 화면에서 다시 입장해 주세요.'; show('#view-wait'); return; }
 
@@ -219,7 +232,6 @@
       const g=snap.data();
       const status = g.status || '-';
       $('#gstatus').textContent = status;
-
       isRunning = (status === 'running');
 
       totalQ = Number(g.totalQuestions || 0);
@@ -231,17 +243,34 @@
           allowServerDecrease = true;
           meFinished = false;
           renderedIndex = -1;
-          submitted = false; // 상태 초기화
+          submitted = false;
           show('#view-wait'); stopTimer();
+
+          if (unsubQs){ unsubQs(); unsubQs=null; }
+          QMAP.clear();
         } else if (status === 'running' && lastGameStatus === 'waiting'){
           allowServerDecrease = true;
-          submitted = false; // 첫 문제 자동 렌더 허용
+          submitted = false;
+          // 문항 실시간 구독(캐시)
+          if (unsubQs) unsubQs();
+          unsubQs = questionsCol().orderBy('order','asc').onSnapshot(sn=>{
+            const m=new Map();
+            sn.forEach(d=>{
+              const q=d.data()||{};
+              m.set(Number(q.order||0), {...q, _id:d.id});
+            });
+            QMAP = m;
+          });
+        } else if (status === 'ended'){
+          if (unsubQs){ unsubQs(); unsubQs=null; }
+          QMAP.clear();
+          updateTotalScore();
         }
         lastGameStatus = status;
       }
 
       if(status==='waiting'){ show('#view-wait'); stopTimer(); return; }
-      if(status==='ended'){ show('#view-end'); stopTimer(); return; }
+      if(status==='ended'){ show('#view-end'); stopTimer(); updateTotalScore(); return; }
 
       if(!meFinished){
         if (isRunning && renderedIndex !== myIndex) {
@@ -252,8 +281,8 @@
     });
   }
 
-  // 문제 표시
-  let currentQ=null, currentQid=null;
+  // ── 문제 표시
+  let currentQ=null;
   async function renderQuestion(order){
     try{
       if (!isRunning) { show('#view-wait'); return; }
@@ -262,7 +291,7 @@
       if (totalQ > 0 && order >= totalQ){
         await playerDoc.set({ finished:true }, {merge:true});
         meFinished = true;
-        show('#view-end'); stopTimer(); return;
+        show('#view-end'); stopTimer(); updateTotalScore(); return;
       }
 
       stopTimer();
@@ -271,13 +300,15 @@
       $('#btnNext').style.display='none';
       $('#btnNext').disabled = true;
 
-      const qSnap = await questionsCol().where('order','==', Number(order)).limit(1).get();
-      if(qSnap.empty){ show('#view-wait'); return; }
+      // 캐시 우선
+      let q = QMAP.get(Number(order));
+      if (!q){
+        const qSnap = await questionsCol().where('order','==', Number(order)).limit(1).get();
+        if(qSnap.empty){ show('#view-wait'); return; }
+        q = qSnap.docs[0].data();
+      }
 
-      const qDoc = qSnap.docs[0];
-      const q = qDoc.data();
       currentQ = q;
-      currentQid = qDoc.id;
       renderedIndex = order;
 
       $('#q-title').textContent = `문제 ${order+1}`;
@@ -332,9 +363,18 @@
 
   // 제출
   $('#btnSubmit').addEventListener('click', ()=> doSubmit(false));
-  $('#btnNext').addEventListener('click', ()=>{
-    if (meFinished) return;
-    renderQuestion(myIndexLocal);
+  $('#btnNext').addEventListener('click', async ()=>{
+    if (meFinished || nextLock) return;
+    nextLock = true;
+    $('#btnNext').disabled = true;
+    $('#after-msg').textContent = '다음 문제 불러오는 중…';
+    $('#after-msg').style.display = 'block';
+    try{
+      await renderQuestion(myIndexLocal);
+    }finally{
+      nextLock = false;
+      // renderQuestion에서 버튼을 다시 숨기고 필요 시 타이머를 재시작합니다.
+    }
   });
 
   async function doSubmit(timeout){
@@ -367,14 +407,13 @@
     $('#after-msg').textContent = msg;
     $('#after-msg').style.display='block';
 
-    // rid: "UID_문항번호"
+    // 🔐 rid: "UID_문항번호"
     const rid = `${ME.uid}_${Number(renderedIndex)}`;
     const nowTs = firebase.firestore.FieldValue.serverTimestamp();
 
     try{
       await db.runTransaction(async (tr)=>{
         const respRef = responsesCol().doc(rid);
-
         const existed = await tr.get(respRef);
         if (existed.exists) throw new Error('already-exists');
 
@@ -429,7 +468,7 @@
 
     $('#btnSubmit').disabled = true;
 
-    // 잠시 후 서버 상태 재확인 → 완료면 종료
+    // 잠시 후 서버 상태 재확인 → 완료면 종료화면 + 총점 갱신
     setTimeout(async ()=>{
       $('#btnSubmit').disabled=false;
       try{
@@ -439,7 +478,7 @@
         if (tq > 0 && px >= tq) {
           await playerDoc.set({ finished:true }, {merge:true});
           meFinished = true;
-          show('#view-end'); stopTimer(); return;
+          show('#view-end'); stopTimer(); updateTotalScore(); return;
         }
       }catch(_){}
     }, 600);
