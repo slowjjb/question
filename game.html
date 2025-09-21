@@ -6,7 +6,8 @@
   <title>게임 화면</title>
   <style>
     :root{--bg:#0f172a;--panel:#111827;--line:#334155;--muted:#94a3b8;--brand:#1d4ed8;--ok:#22c55e;--warn:#f59e0b;--danger:#ef4444}
-    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:#fff;font-family:system-ui,-apple-system,Segoe UI,Roboto,"Noto Sans KR",sans-serif}
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:#fff;font-family:system-ui,-apple-system,Segoe UI,Roboto,"Noto Sans KR",sans-serif}
     .wrap{max-width:860px;margin:24px auto;padding:0 16px}
     .card{background:#111827;border:1px solid var(--line);border-radius:16px;padding:20px}
     .center{display:grid;place-items:center;min-height:40vh;text-align:center}
@@ -16,13 +17,14 @@
     button{padding:11px 14px;border-radius:10px;border:0;font-weight:800;cursor:pointer}
     .primary{background:var(--ok);color:#052814}
     .ghost{background:#374151;color:#fff}
-    .danger{background:#ef4444;color:#2b0b0b}
-    .muted{color:#94a3b8}
+    .danger{background:var(--danger);color:#2b0b0b}
+    .muted{color:var(--muted)}
     .qbox{margin-top:12px;padding:14px;border:1px solid var(--line);border-radius:12px;background:#0b1220}
     .choice{display:block;padding:12px 14px;border:1px solid #334155;border-radius:12px;margin-top:8px;cursor:pointer}
     .choice.active{outline:3px solid #60a5fa;border-color:#60a5fa;background:#0b1930}
     input[type="text"]{width:100%;padding:12px 14px;border-radius:12px;border:1px solid #334155;background:#0b1220;color:#fff}
-    h1{font-size:22px;margin:0 0 6px} h2{font-size:18px;margin:0 0 10px}
+    h1{font-size:22px;margin:0 0 6px}
+    h2{font-size:18px;margin:0 0 10px}
   </style>
 </head>
 <body>
@@ -82,21 +84,23 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script src="./js/firebase-init.js"></script>
 <script>
-  // helpers
+  // ── helpers
   const $=s=>document.querySelector(s);
   function getQuery(k){const u=new URL(location.href);return u.searchParams.get(k)}
   const gameId = getQuery('game') || localStorage.getItem('q_gameId') || '';
   $('#gid').textContent = $('#gid2').textContent = $('#gid3').textContent = gameId || '(없음)';
+
   const playersCol = ()=>db.collection('q_games').doc(gameId).collection('q_players');
   const questionsCol = ()=>db.collection('q_games').doc(gameId).collection('q_questions');
   const responsesCol = ()=>db.collection('q_games').doc(gameId).collection('q_responses');
 
+  // ── view switch
   function show(id){
     for(const v of ['#view-wait','#view-q','#view-end']) $(v).style.display='none';
     $(id).style.display='block';
   }
 
-  // 점수(10점 만점, 20초 무감점, 이후 10초당 -1, 최대 -5)
+  // ── scoring (10점 만점, 20초 무감점, 이후 10초마다 -1, 최대 -5)
   function calcScore(isCorrect, elapsedSec){
     if(!isCorrect) return {score:0,penalty:0};
     const over = Math.max(0, elapsedSec - 20);
@@ -106,13 +110,14 @@
     return {score,penalty};
   }
 
-  // auth + 내 player 문서 준비
+  // ── user/auth + 내 player 문서 준비
   let ME=null; let playerDoc=null;
   auth.onAuthStateChanged(async (u)=>{
     try{
       if(!u) u = (await auth.signInAnonymously()).user;
       ME = u;
 
+      // 내 player 문서가 없으면 만들어두기(이름/반/번호는 join에서 저장했다고 가정)
       const pRef = playersCol().doc(ME.uid);
       const pSnap = await pRef.get();
       if(!pSnap.exists){
@@ -129,10 +134,10 @@
     }
   });
 
-  // game binding
+  // ── game binding
   let unsubGame=null, timer=null, submitted=false;
   let currentIndex=-1, startMs=0, currentQ=null;
-  let limitSec = 75; // ⬅ 선생님 화면의 autoLimitSec을 받아 동기화
+  let limitSec = 75; // 선생님 화면의 autoLimitSec 동기화용
 
   function bindGame(){
     if(!gameId){ $('#wait-text').textContent='게임 ID 없음: join 화면에서 다시 입장해 주세요.'; show('#view-wait'); return; }
@@ -143,23 +148,37 @@
 
       const g=snap.data();
       $('#gstatus').textContent = g.status;
-      $('#gindex').textContent  = g.currentIndex;
-      // ⬇ 제한(초) 동기화
-      if (typeof g.autoLimitSec === 'number') limitSec = Math.max(5, Math.min(600, g.autoLimitSec|0));
+
+      // 상단 문항 표기: 1-기반 "현재/총문항"
+      const totalQ = g.totalQuestions || 0;
+      const idxRaw = (typeof g.currentIndex === 'number') ? g.currentIndex : -1;
+      $('#gindex').textContent = (idxRaw>=0 && totalQ>0) ? `${idxRaw+1}/${totalQ}` : '-';
+
+      // 제한(초) 동기화
+      if (typeof g.autoLimitSec === 'number') {
+        const v = g.autoLimitSec|0;
+        limitSec = Math.max(5, Math.min(600, v));
+      }
 
       if(g.status==='waiting'){ show('#view-wait'); stopTimer(); return; }
       if(g.status==='ended'){ show('#view-end'); stopTimer(); return; }
-      if(typeof g.currentIndex!=='number' || g.currentIndex<0){ show('#view-wait'); stopTimer(); return; }
+      if(idxRaw<0){ show('#view-wait'); stopTimer(); return; }
 
-      if(currentIndex!==g.currentIndex){
-        currentIndex = g.currentIndex;
+      // 새 문제 진입
+      if(currentIndex!==idxRaw){
+        currentIndex = idxRaw;
         startMs = (g.questionStartAt && g.questionStartAt.toMillis) ? g.questionStartAt.toMillis() : Date.now();
         submitted=false;
         $('#after-msg').style.display='none';
         await renderQuestion(currentIndex);
       }else{
+        // 같은 문제여도 시작시각이 바뀌면 타이머/상태 초기화
         const ms = (g.questionStartAt && g.questionStartAt.toMillis) ? g.questionStartAt.toMillis() : startMs;
-        if(ms!==startMs){ startMs=ms; submitted=false; $('#after-msg').style.display='none'; }
+        if(ms!==startMs){
+          startMs=ms; submitted=false;
+          $('#after-msg').style.display='none';
+          startTimer();
+        }
       }
     });
   }
@@ -167,6 +186,8 @@
   async function renderQuestion(order){
     try{
       stopTimer();
+
+      // order 로 문서 하나 찾기
       const qSnap = await questionsCol().where('order','==',order).limit(1).get();
       if(qSnap.empty){ $('#wait-text').textContent='문제를 불러올 수 없습니다.'; show('#view-wait'); return; }
       currentQ = qSnap.docs[0].data();
@@ -175,9 +196,11 @@
       $('#q-title').textContent = `문제 ${order+1}`;
       $('#q-prompt').textContent = currentQ.prompt;
 
+      // 보기/입력 초기화
       const box = $('#q-choices'); box.innerHTML='';
+      document.querySelectorAll('.choice').forEach(x=>x.classList.remove('active'));
       $('#q-short').style.display='none';
-      $('#short-input').value='';                 // ⬅ 입력칸 초기화
+      $('#short-input').value='';
 
       if(currentQ.type==='mcq'){
         const ch = currentQ.choices || [];
@@ -197,6 +220,11 @@
         $('#q-short').style.display='block';
       }
 
+      // 주관식 Enter 제출
+      $('#short-input').onkeydown = (e)=>{
+        if(e.key==='Enter'){ e.preventDefault(); doSubmit(false); }
+      };
+
       show('#view-q');
       startTimer();
     }catch(e){
@@ -209,26 +237,29 @@
     timer = setInterval(()=>{
       const sec = Math.max(0, (Date.now()-startMs)/1000);
       $('#tm').textContent = sec.toFixed(1);
+
+      // penalty 미리보기
       const pen = Math.min(5, Math.max(0, Math.ceil((sec-20)/10)));
       $('#pen').textContent = pen;
 
-      // ⬇ 선생님 autoLimitSec 과 동기화된 시간초과
-      if(!submitted && sec >= Math.max(5, limitSec) + 0.2){
+      // 선생님 autoLimitSec 과 동기화된 시간초과 처리
+      if(!submitted && sec >= Math.max(5, limitSec)){
         doSubmit(true); // timeout
       }
     }, 200);
   }
   function stopTimer(){ if(timer){ clearInterval(timer); timer=null; } }
 
-  // 제출
+  // ── 제출
   $('#btnSubmit').addEventListener('click', ()=> doSubmit(false));
 
   async function doSubmit(timeout){
     if(submitted || !currentQ) return;
     submitted = true;
-    const elapsedSec = Math.floor((Date.now()-startMs)/1000);
 
+    const elapsedSec = Math.floor((Date.now()-startMs)/1000);
     let myAnswer='', isCorrect=false;
+
     if(timeout){
       myAnswer = '(시간초과)'; isCorrect = false;
     }else if(currentQ.type==='mcq'){
@@ -245,6 +276,7 @@
 
     const {score, penalty} = timeout ? {score:0,penalty:5} : calcScore(isCorrect, elapsedSec);
 
+    // 결과 메시지
     const msg = timeout
       ? `⏱ 시간초과입니다. (경과 ${elapsedSec}s)`
       : (isCorrect ? `✅ 정답! 경과 ${elapsedSec}s, 감점 ${penalty}, 점수 ${score}점`
@@ -252,35 +284,43 @@
     $('#after-msg').textContent = msg;
     $('#after-msg').style.display='block';
 
-    // ⬇ 선생님 자동진행에서 신뢰하는 필드들 추가: createdAt / submitted / answeredAt
+    // 응답 저장 (idempotent: 같은 문항 재제출 시 점수 중복 방지)
     const rid = `${ME.uid}_${currentIndex}`;
     const nowTs = firebase.firestore.FieldValue.serverTimestamp();
     try{
-      await responsesCol().doc(rid).set({
-        rid, gameId, order: currentIndex,
-        playerId: ME.uid,
-        answer: myAnswer,
-        correctAnswer: currentQ.answer || '',
-        isCorrect, elapsedSec, penalty, score,
-        type: currentQ.type,
-        createdAt: nowTs,            // 시작 이후 제출 구분에 사용
-        submitted: true,             // 제출 완료 플래그
-        answeredAt: nowTs            // 제출 시각
-      }, {merge:true});              // merge:true 로 재제출에도 안전
-    }catch(e){ /* ignore */ }
+      await db.runTransaction(async (tr)=>{
+        const ref = responsesCol().doc(rid);
+        const prev = await tr.get(ref);
+        if (prev.exists && prev.data()?.submitted && prev.data()?.order === currentIndex) {
+          return; // 이미 제출됨 → 아무 것도 하지 않음
+        }
 
-    // 누적 점수
-    try{
-      await playerDoc.set({
-        scoreTotal: firebase.firestore.FieldValue.increment(score),
-        lastSubmittedOrder: currentIndex,
-        lastElapsedSec: elapsedSec
-      }, {merge:true});
-    }catch(_){}
+        tr.set(ref, {
+          rid, gameId, order: currentIndex,
+          playerId: ME.uid,
+          answer: myAnswer,
+          correctAnswer: currentQ.answer || '',
+          isCorrect, elapsedSec, penalty, score,
+          type: currentQ.type,
+          createdAt: nowTs,
+          submitted: true,
+          answeredAt: nowTs
+        });
 
-    // 버튼 잠깐 비활성
+        // 누적 점수 반영 (트랜잭션 내에서)
+        tr.set(playerDoc, {
+          scoreTotal: firebase.firestore.FieldValue.increment(score),
+          lastSubmittedOrder: currentIndex,
+          lastElapsedSec: elapsedSec
+        }, {merge:true});
+      });
+    }catch(e){
+      console.warn('제출 처리 중 오류(무시 가능):', e?.message||e);
+    }
+
+    // 버튼 잠깐 비활성화 (연타 방지)
     $('#btnSubmit').disabled = true;
-    setTimeout(()=>{ $('#btnSubmit').disabled=false; }, 2000);
+    setTimeout(()=>{ $('#btnSubmit').disabled=false; }, 1500);
   }
 </script>
 </body>
