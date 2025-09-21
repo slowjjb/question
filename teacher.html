@@ -54,7 +54,7 @@
       <a href="./teacher-login.html" class="pill" style="text-decoration:none;">로그인 화면으로</a>
     </div>
 
-    <!-- 게임 상태 -->
+    <!-- 게임 상태 표시 -->
     <div class="row card" id="gameInfo" style="display:none;align-items:center;gap:12px;">
       <div>게임 ID: <span id="gid" class="kbd"></span></div>
       <button id="btnCopy" class="ghost">ID 복사</button>
@@ -209,7 +209,7 @@
       return snap.size;
     }
 
-    /* ───────── (추가) 지난 응답/점수 정리 ───────── */
+    /* ───────── 지난 응답/점수 정리 ───────── */
     async function clearResponses(gameId){
       try{
         const col = db.collection('q_games').doc(gameId).collection('q_responses');
@@ -282,15 +282,34 @@
         .collection('q_players')
         .onSnapshot(s=>{ playersCnt = s.size; });
 
-      // 2) 현재 문항 응답 리스너
+      // 2) 현재 문항 '제출된' 응답만 집계 + 시작 이후 응답만 인정
       respUnsub = db.collection('q_games').doc(gameId)
         .collection('q_responses').where('order','==', idx)
         .onSnapshot(s=>{
           const responded = new Set();
-          s.forEach(d=> responded.add(d.data().playerId));
+
+          const startMs = g.questionStartAt && g.questionStartAt.toMillis
+            ? g.questionStartAt.toMillis()
+            : 0;
+
+          s.forEach(d=>{
+            const r = d.data(); if (!r) return;
+            // 시작 이후에 생성된 응답만
+            const createdMs = r.createdAt && r.createdAt.toMillis ? r.createdAt.toMillis() : 0;
+            const isAfterStart = startMs ? (createdMs >= startMs - 500) : true;
+
+            // '제출된' 응답 판단
+            const hasSubmittedFlag = r.submitted === true || !!r.answeredAt;
+            const hasAnswer = typeof r.answer === 'string' ? r.answer.trim() !== '' : (r.answer != null);
+
+            if (isAfterStart && (hasSubmittedFlag || hasAnswer) && r.playerId) {
+              responded.add(r.playerId);
+            }
+          });
+
           if (!autoFired && playersCnt>0 && responded.size >= playersCnt) {
             autoFired = true;
-            setTimeout(()=> goNextFromAuto(idx), 1200); // 1.2초 여유
+            setTimeout(()=> goNextFromAuto(idx), 1200);
           }
         });
 
@@ -331,7 +350,7 @@
         $('#btnPrev').disabled  = !(g.status==='running' && idx>0);
         $('#btnNext').disabled  = !(g.status==='running' && idx < total-1);
         $('#btnEnd').disabled   = !(g.status==='running');
-        $('#btnReset').disabled = (g.status==='waiting');
+        $('#btnReset').disabled = (g.status==='waiting'); // ended에서도 초기화 가능
 
         // 자동진행 상태/제한시간 동기화
         autoMode = !!g.auto;
@@ -434,7 +453,7 @@
       }
     });
 
-    // 초기화(대기): 응답도 함께 비워 안전하게 리셋
+    // 초기화(대기): 응답도 함께 비워 안전하게 리셋 (ended에서도 가능)
     $('#btnReset').addEventListener('click', async ()=>{
       if(!confirm('게임을 대기 상태로 초기화할까요? (현재 진행 위치가 초기화됩니다)')) return;
       killAutoWatchers();
