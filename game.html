@@ -119,8 +119,8 @@
   let lastGameStatus = '';
   let allowServerDecrease = false;
 
-  const TIMEOUT_SEC = 50; // 50초 자동제출
-  const AUTO_ADVANCE_MS = 0; // 자동넘김 비활성(원하면 1200 같은 값으로 설정)
+  const TIMEOUT_SEC = 50;      // 50초 자동제출
+  const AUTO_ADVANCE_MS = 0;   // 자동넘김 비활성(“다음으로” 눌러 이동)
 
   // ── presence heartbeat
   async function startHeartbeat(){
@@ -260,7 +260,7 @@
 
       const qSnap = await questionsCol().where('order','==', Number(order)).limit(1).get();
       if(qSnap.empty){
-        // ❗ 문항 로딩 지연: 종료 금지, 잠시 대기만
+        // 로딩 지연 시 대기 화면만 보여주고 종료 금지
         show('#view-wait');
         return;
       }
@@ -357,21 +357,20 @@
     $('#after-msg').textContent = msg;
     $('#after-msg').style.display='block';
 
-    const rid = `${ME.uid}_${currentQid||renderedIndex}`;
+    // 🔐 보안규칙과 일치: rid는 "UID_문항번호" 고정
+    const rid = `${ME.uid}_${Number(renderedIndex)}`;
     const nowTs = firebase.firestore.FieldValue.serverTimestamp();
 
     try{
       await db.runTransaction(async (tr)=>{
         const respRef = responsesCol().doc(rid);
 
-        // ✅ compat SDK에는 create() 없음 → 존재 확인 후 set()
+        // Transaction에는 create() 없음 → 존재 확인 후 set()
         const existed = await tr.get(respRef);
-        if (existed.exists) {
-          throw new Error('already-exists');
-        }
+        if (existed.exists) throw new Error('already-exists');
 
         tr.set(respRef, {
-          rid, gameId, order: renderedIndex,
+          rid, gameId, order: Number(renderedIndex),
           playerId: ME.uid,
           answer: myAnswer,
           correctAnswer: currentQ.answer || '',
@@ -386,7 +385,7 @@
         tr.set(playerDoc, {
           scoreTotal: firebase.firestore.FieldValue.increment(score),
           progressIndex: firebase.firestore.FieldValue.increment(1),
-          lastSubmittedOrder: renderedIndex,
+          lastSubmittedOrder: Number(renderedIndex),
           lastElapsedSec: elapsedSec
         }, {merge:true});
       });
@@ -407,6 +406,9 @@
         $('#after-msg').textContent = '이미 제출된 문항입니다. 다음으로 이동하세요.';
         $('#after-msg').style.display='block';
         $('#btnNext').style.display = 'inline-block';
+      } else if (/permission-denied/i.test(String(e?.message||''))) {
+        alert('제출 실패: 권한 오류(규칙). Firestore 규칙 게시 여부를 확인하세요.');
+        submitted = false;
       } else {
         alert('제출에 실패했습니다. 네트워크를 확인하고 다시 시도하세요.');
         submitted = false; // 재시도 가능
