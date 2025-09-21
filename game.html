@@ -260,10 +260,9 @@
 
       const qSnap = await questionsCol().where('order','==', Number(order)).limit(1).get();
       if(qSnap.empty){
-        if (totalQ > 0 && order < totalQ) { show('#view-wait'); return; }
-        await playerDoc.set({ finished:true }, {merge:true});
-        meFinished = true;
-        show('#view-end'); stopTimer(); return;
+        // ❗ 문항 로딩 지연: 종료 금지, 잠시 대기만
+        show('#view-wait');
+        return;
       }
       const qDoc = qSnap.docs[0];
       const q = qDoc.data();
@@ -365,7 +364,13 @@
       await db.runTransaction(async (tr)=>{
         const respRef = responsesCol().doc(rid);
 
-        tr.create(respRef, {
+        // ✅ compat SDK에는 create() 없음 → 존재 확인 후 set()
+        const existed = await tr.get(respRef);
+        if (existed.exists) {
+          throw new Error('already-exists');
+        }
+
+        tr.set(respRef, {
           rid, gameId, order: renderedIndex,
           playerId: ME.uid,
           answer: myAnswer,
@@ -393,22 +398,18 @@
       // 다음으로 버튼 표시
       $('#btnNext').style.display = 'inline-block';
 
-      // 자동넘김을 원하면 아래 지연 사용
       if (AUTO_ADVANCE_MS > 0) {
         setTimeout(()=>{ if (!meFinished) renderQuestion(myIndexLocal); }, AUTO_ADVANCE_MS);
       }
     }catch(e){
-      console.warn('제출 실패:', e?.code, e?.message||e);
-
-      if (e?.code === 'already-exists' || /ALREADY_EXISTS/i.test(String(e?.message||''))){
-        $('#after-msg').textContent = '이미 제출된 문항입니다. 다음 문항으로 이동하거나 교사에게 문의하세요.';
+      console.warn('제출 실패:', e?.message||e);
+      if (/already[- ]exists/i.test(String(e?.message||''))) {
+        $('#after-msg').textContent = '이미 제출된 문항입니다. 다음으로 이동하세요.';
         $('#after-msg').style.display='block';
-        // 진행도는 올리지 않음. 사용자가 직접 "다음으로" 눌러 이동 가능(이미 제출된 상태라면 서버 progressIndex가 곧 올라옵니다).
         $('#btnNext').style.display = 'inline-block';
       } else {
-        alert('제출에 실패했습니다. 네트워크 상태를 확인한 뒤 다시 시도하세요.');
-        // 실패했으므로 제출 상태 해제하여 다시 제출 가능
-        submitted = false;
+        alert('제출에 실패했습니다. 네트워크를 확인하고 다시 시도하세요.');
+        submitted = false; // 재시도 가능
       }
       return;
     }
@@ -418,7 +419,6 @@
     // 잠시 후 서버 상태 재확인 → 완료면 종료화면
     setTimeout(async ()=>{
       $('#btnSubmit').disabled=false;
-
       try{
         const [pSnap, gSnap] = await Promise.all([playerDoc.get(), gameDoc().get()]);
         const px = Math.max(myIndexLocal, Number((pSnap.data()||{}).progressIndex || 0));
