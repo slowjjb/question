@@ -16,7 +16,7 @@
     .ghost{background:#374151;color:#fff}
     .warn{background:var(--warn);color:#1f1300}
     .danger{background:var(--danger);color:#2b0b0b}
-    .kbd{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; background:#0b1220;border:1px solid #334155;padding:4px 6px;border-radius:8px}
+    .kbd{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; background:#0b1220;border:1px solid var(--line);padding:4px 6px;border-radius:8px}
     .card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px}
     input,select,textarea{padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:#0b1220;color:#fff}
     textarea{width:100%;min-height:80px}
@@ -36,7 +36,9 @@
     <div class="row">
       <button id="btnCreate" class="primary">게임 만들기</button>
       <button id="btnStart"  class="warn"   disabled>시작</button>
+      <button id="btnPrev"   class="ghost"  disabled>이전 문제</button>
       <button id="btnNext"   class="ghost"  disabled>다음 문제</button>
+      <button id="btnReset"  class="ghost"  disabled>초기화(대기)</button>
       <button id="btnEnd"    class="danger" disabled>종료</button>
       <button id="btnSignOut" class="ghost">로그아웃</button>
       <a href="./teacher-login.html" class="pill" style="text-decoration:none;">로그인 화면으로</a>
@@ -89,58 +91,60 @@
       </table>
     </section>
 
-    <p style="margin-top:16px;"><small>Tip) “게임 만들기” 후에 문제를 추가하고, 시작/다음/종료 버튼으로 진행을 제어합니다.</small></p>
+    <p style="margin-top:16px;"><small>Tip) “게임 만들기” 후 문제를 추가하고, 시작/이전/다음/초기화/종료로 진행을 제어합니다.</small></p>
   </main>
 
   <!-- Firebase CDN -->
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
-  <!-- 공통 초기화 -->
   <script src="./js/firebase-init.js"></script>
 
   <script>
-    // ── 로그인 가드
+    // 로그인 가드
     auth.onAuthStateChanged(user => {
       const $u = document.getElementById('user');
-      if (!user) { $u.textContent = '로그인이 필요합니다'; location.replace('./teacher-login.html'); return; }
+      if (!user) { $u.textContent='로그인이 필요합니다'; location.replace('./teacher-login.html'); return; }
       $u.textContent = `로그인: ${user.displayName || user.email}`;
     });
 
-    // ── 유틸
+    // 유틸
     const $ = s => document.querySelector(s);
-    function genId(len=7){ const chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s=''; for(let i=0;i<len;i++){ s+=chars[Math.floor(Math.random()*chars.length)]; } return s; }
+    function genId(len=7){ const C='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s=''; for(let i=0;i<len;i++) s+=C[Math.floor(Math.random()*C.length)]; return s; }
 
     let gameId = localStorage.getItem('q_gameId') || '';
-    let unsubGame = null, unsubList = null;
+    let unsubGame=null, unsubList=null;
 
     function ensureUI(){
       if (!gameId) return;
       $('#gid').textContent = gameId;
-      $('#gameInfo').style.display = 'flex';
-      $('#editor').style.display = 'block';
-      $('#list').style.display = 'block';
-      $('#btnStart').disabled = false;
-      // 실시간로 게임 문서/문제 목록 리스너
+      $('#gameInfo').style.display='flex';
+      $('#editor').style.display='block';
+      $('#list').style.display='block';
+
       if (unsubGame) unsubGame();
       unsubGame = db.collection('q_games').doc(gameId).onSnapshot(s=>{
-        if (!s.exists) return;
+        if(!s.exists) return;
         const g=s.data();
-        $('#gstatus').textContent = g.status;
-        $('#gindex').textContent  = g.currentIndex;
-        $('#gtotal').textContent  = g.totalQuestions || 0;
+        const total = g.totalQuestions || 0;
+        const idx   = Number(g.currentIndex ?? -1);
 
-        // 버튼 상태
-        $('#btnStart').disabled = g.status!=='waiting' || (g.totalQuestions||0)===0;
-        $('#btnNext').disabled  = g.status!=='running';
-        $('#btnEnd').disabled   = g.status==='ended' || g.status==='waiting';
+        $('#gstatus').textContent = g.status;
+        $('#gindex').textContent  = idx;
+        $('#gtotal').textContent  = total;
+
+        // 버튼 상태 제어
+        $('#btnStart').disabled = !(g.status==='waiting' && total>0);
+        $('#btnPrev').disabled  = !(g.status==='running' && idx>0);
+        $('#btnNext').disabled  = !(g.status==='running' && idx < total-1);
+        $('#btnEnd').disabled   = !(g.status==='running');
+        $('#btnReset').disabled = (g.status==='waiting');
       });
 
       if (unsubList) unsubList();
       unsubList = db.collection('q_games').doc(gameId).collection('q_questions')
         .orderBy('order','asc').onSnapshot(sn=>{
-          const tbody = $('#tbody'); tbody.innerHTML='';
-          let i=0;
+          const tbody=$('#tbody'); tbody.innerHTML='';
           sn.forEach(doc=>{
             const q=doc.data();
             const tr=document.createElement('tr');
@@ -149,10 +153,8 @@
               <td>${q.type}</td>
               <td style="max-width:600px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${q.prompt}</td>
               <td>${q.answer}</td>
-              <td>
-                <button class="ghost" data-del="${doc.id}">삭제</button>
-              </td>`;
-            tbody.appendChild(tr); i++;
+              <td><button class="ghost" data-del="${doc.id}">삭제</button></td>`;
+            tbody.appendChild(tr);
           });
           db.collection('q_games').doc(gameId).set({ totalQuestions: sn.size }, {merge:true});
           tbody.onclick = async (e)=>{
@@ -163,63 +165,74 @@
         });
     }
 
-    // ── 게임 만들기
+    // 게임 만들기
     $('#btnCreate').addEventListener('click', async ()=>{
-      const user = auth.currentUser; if(!user) return alert('로그인이 필요합니다');
+      const user=auth.currentUser; if(!user) return alert('로그인이 필요합니다');
       gameId = genId(7);
       const gameDoc = {
         title: `퀴즈 - ${new Date().toLocaleString()}`,
-        status: 'waiting',
-        createdBy: user.uid,
+        status:'waiting', createdBy:user.uid,
         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-        currentIndex: -1,
-        totalQuestions: 0
+        currentIndex:-1, totalQuestions:0
       };
-      await db.collection('q_games').doc(gameId).set(gameDoc, {merge:true});
+      await db.collection('q_games').doc(gameId).set(gameDoc,{merge:true});
       localStorage.setItem('q_gameId', gameId);
       ensureUI();
       alert('게임이 생성되었습니다. 학생에게 게임 ID를 전달하세요.');
     });
 
-    // ── 버튼들
+    // 버튼 동작
     $('#btnCopy').addEventListener('click', async ()=>{
-      try { await navigator.clipboard.writeText(gameId); alert('게임 ID 복사됨'); } catch { alert('복사 실패'); }
+      try{ await navigator.clipboard.writeText(gameId); alert('게임 ID 복사됨'); }catch{ alert('복사 실패');}
     });
-    $('#btnSignOut').addEventListener('click', async ()=>{
-      await auth.signOut(); location.replace('./teacher-login.html');
-    });
+    $('#btnSignOut').addEventListener('click', async ()=>{ await auth.signOut(); location.replace('./teacher-login.html'); });
+
     $('#btnStart').addEventListener('click', async ()=>{
       if(!gameId) return;
-      const gref=db.collection('q_games').doc(gameId);
-      await gref.set({
-        status:'running',
-        currentIndex:0,
-        questionStartAt: firebase.firestore.FieldValue.serverTimestamp()
-      }, {merge:true});
-      alert('게임을 시작했습니다.');
-    });
-    $('#btnNext').addEventListener('click', async ()=>{
-      if(!gameId) return;
-      const gref=db.collection('q_games').doc(gameId);
-      const g=(await gref.get()).data(); const next=(g.currentIndex||0)+1;
-      await gref.set({
-        currentIndex: next,
-        questionStartAt: firebase.firestore.FieldValue.serverTimestamp()
-      }, {merge:true});
-    });
-    $('#btnEnd').addEventListener('click', async ()=>{
-      if(!gameId) return;
-      await db.collection('q_games').doc(gameId).set({status:'ended'}, {merge:true});
+      const gref = db.collection('q_games').doc(gameId);
+      await gref.set({ status:'running', currentIndex:0, questionStartAt: firebase.firestore.FieldValue.serverTimestamp() }, {merge:true});
     });
 
-    // ── 문제 에디터 UI
-    function renderChoiceInputs(count=4){
-      const wrap=$('#choices'); wrap.innerHTML='';
-      for(let i=0;i<count;i++){
-        const label=String.fromCharCode(65+i); // A,B,C...
-        const row=document.createElement('div');
-        row.className='row';
-        row.innerHTML=`<label style="width:100%">보기 ${label} <input data-chidx="${i}" style="width:100%" placeholder="보기 내용을 입력하세요"></label>`;
+    $('#btnPrev').addEventListener('click', async ()=>{
+      const gref = db.collection('q_games').doc(gameId);
+      const g=(await gref.get()).data(); const idx=Number(g.currentIndex??0);
+      if (idx<=0) return;
+      await gref.set({ currentIndex: idx-1, questionStartAt: firebase.firestore.FieldValue.serverTimestamp() }, {merge:true});
+    });
+
+    $('#btnNext').addEventListener('click', async ()=>{
+      const gref = db.collection('q_games').doc(gameId);
+      const g=(await gref.get()).data();
+      const total = Number(g.totalQuestions||0);
+      const next  = Number(g.currentIndex||0) + 1;
+      if (next >= total) {
+        // 마지막을 넘지 않도록: 자동 종료
+        await gref.set({ status:'ended' }, {merge:true});
+        alert('마지막 문제까지 완료되어 게임을 종료했습니다.');
+      } else {
+        await gref.set({ currentIndex: next, questionStartAt: firebase.firestore.FieldValue.serverTimestamp() }, {merge:true});
+      }
+    });
+
+    $('#btnReset').addEventListener('click', async ()=>{
+      if(!confirm('게임을 대기 상태로 초기화할까요? (현재 진행 위치가 초기화됩니다)')) return;
+      const gref = db.collection('q_games').doc(gameId);
+      await gref.set({ status:'waiting', currentIndex:-1 }, {merge:true});
+    });
+
+    $('#btnEnd').addEventListener('click', async ()=>{
+      const gref = db.collection('q_games').doc(gameId);
+      await gref.set({ status:'ended' }, {merge:true});
+    });
+
+    // 문제 에디터
+    const $choices = () => [...document.querySelectorAll('[data-chidx]')];
+    function renderChoiceInputs(n=4){
+      const wrap=document.querySelector('#choices'); wrap.innerHTML='';
+      for(let i=0;i<n;i++){
+        const L=String.fromCharCode(65+i);
+        const row=document.createElement('div'); row.className='row';
+        row.innerHTML=`<label style="width:100%">보기 ${L} <input data-chidx="${i}" style="width:100%" placeholder="보기 내용을 입력하세요"></label>`;
         wrap.appendChild(row);
       }
     }
@@ -231,38 +244,23 @@
       $('#choices').style.display = (type==='mcq') ? 'block' : 'none';
     });
 
-    // ── 문제 추가
     $('#btnAdd').addEventListener('click', async ()=>{
       if(!gameId) return alert('먼저 게임을 만드세요.');
-      const type   = $('#qtype').value;
-      const prompt = $('#qprompt').value.trim();
-      const answer = $('#qanswer').value.trim();
+      const type=$('#qtype').value, prompt=$('#qprompt').value.trim(), answer=$('#qanswer').value.trim();
       if(!prompt || !answer) return alert('문제와 정답을 입력하세요.');
-
-      // choices 수집
       let choices=null;
       if(type==='mcq'){
-        const inputs=[...document.querySelectorAll('[data-chidx]')];
-        choices = inputs.map(i=> i.value.trim()).filter(v=>v!=='');
-        if(choices.length < 2) return alert('객관식은 최소 2개의 보기 필요');
+        choices = $choices().map(i=>i.value.trim()).filter(v=>v!=='');
+        if(choices.length<2) return alert('객관식은 최소 2개의 보기 필요');
       }
-
-      // order 계산
       const listSnap = await db.collection('q_games').doc(gameId).collection('q_questions').get();
-      const order = listSnap.size;
-
-      const qdoc = {
-        type, prompt, choices, answer, order,
-        createdAt: firebase.firestore.FieldValue.serverTimestamp()
-      };
-      await db.collection('q_games').doc(gameId).collection('q_questions').add(qdoc);
-
-      // 입력값 초기화
-      $('#qprompt').value=''; $('#qanswer').value='';
-      if(type==='mcq'){ [...document.querySelectorAll('[data-chidx]')].forEach(i=> i.value=''); }
+      const order=listSnap.size;
+      await db.collection('q_games').doc(gameId).collection('q_questions').add({
+        type,prompt,choices,answer,order, createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      $('#qprompt').value=''; $('#qanswer').value=''; $choices().forEach(i=>i.value='');
     });
 
-    // 기존 gameId가 있다면 자동 바인딩
     if (gameId) ensureUI();
   </script>
 </body>
