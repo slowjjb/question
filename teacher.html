@@ -16,7 +16,7 @@
     .ghost{background:#374151;color:#fff}
     .warn{background:var(--warn);color:#1f1300}
     .danger{background:var(--danger);color:#2b0b0b}
-    .kbd{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; background:#0b1220;border:1px solid var(--line);padding:4px 6px;border-radius:8px}
+    .kbd{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace;background:#0b1220;border:1px solid var(--line);padding:4px 6px;border-radius:8px}
     .card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px}
     input,select,textarea{padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:#0b1220;color:#fff}
     textarea{width:100%;min-height:80px}
@@ -33,22 +33,13 @@
   </header>
 
   <main>
-    <!-- 상단 컨트롤 -->
+    <!-- 상단 컨트롤 (개별진행 전제: Prev/Next/자동진행 제거) -->
     <div class="row">
       <button id="btnCreate" class="primary">게임 만들기</button>
       <button id="btnStart"  class="warn"   disabled>시작</button>
-      <button id="btnPrev"   class="ghost"  disabled>이전 문제</button>
-      <button id="btnNext"   class="ghost"  disabled>다음 문제</button>
       <button id="btnReset"  class="ghost"  disabled>초기화(대기)</button>
       <button id="btnEnd"    class="danger" disabled>종료</button>
-
-      <!-- 자동진행 제어 -->
-      <button id="btnAuto" class="ghost">자동진행: OFF</button>
-      <label class="pill" style="display:flex;align-items:center;gap:6px">
-        제한(초)
-        <input id="autoSec" type="number" min="5" max="600" step="5" value="75" style="width:90px"/>
-      </label>
-      <button id="btnSaveAuto" class="ghost">제한 저장</button>
+      <span class="pill">모드: 개별진행(SELF-PACED)</span>
 
       <button id="btnSignOut" class="ghost">로그아웃</button>
       <a href="./teacher-login.html" class="pill" style="text-decoration:none;">로그인 화면으로</a>
@@ -60,9 +51,9 @@
       <button id="btnCopy" class="ghost">ID 복사</button>
       <div class="pill">학생: /question/join.html</div>
       <div class="pill">상태: <span id="gstatus">-</span></div>
-      <div class="pill">현재 문제: <span id="gindex">-</span></div>
       <div class="pill">총 문항: <span id="gtotal">0</span></div>
-      <div class="pill">응답: <span id="gresp">0</span>/<span id="gonline">0</span></div>
+      <div class="pill">온라인: <span id="gonline">0</span></div>
+      <div class="pill">완료: <span id="gfinished">0</span></div>
     </div>
 
     <!-- 템플릿 관리 / 불러오기 -->
@@ -124,13 +115,6 @@
     <!-- 결과 요약(점수판 + 정답률) -->
     <section id="scoreboard" class="card" style="display:none;">
       <h3 style="margin:0 0 8px;">결과 요약</h3>
-      <div class="row" style="justify-content:space-between">
-        <div class="pill">진행: <span id="sbProgress">-</span></div>
-        <div class="row" style="gap:8px">
-          <button id="btnRefreshScore" class="ghost">새로고침</button>
-          <button id="btnResetScores" class="danger">점수 초기화</button>
-        </div>
-      </div>
 
       <h4 style="margin-top:14px">참가자 점수</h4>
       <table>
@@ -145,7 +129,7 @@
       </table>
     </section>
 
-    <p style="margin-top:16px;"><small>흐름) “게임 만들기” → (필요 시 템플릿 불러오기) → 문제 수정/추가 → 시작/이전/다음/초기화/종료</small></p>
+    <p style="margin-top:16px;"><small>흐름) “게임 만들기” → (필요 시 템플릿 불러오기) → 시작 → 각자 진행 → 종료</small></p>
   </main>
 
   <!-- Firebase -->
@@ -165,11 +149,9 @@
     /* ───────── 유틸 ───────── */
     const $ = s => document.querySelector(s);
     function genId(len=7){ const C='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s=''; for(let i=0;i<len;i++) s+=C[Math.floor(Math.random()*C.length)]; return s; }
-    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v|0));
 
     let gameId = localStorage.getItem('q_gameId') || '';
-    let unsubGame=null, unsubList=null;
-    let unsubPlayers=null, unsubResp=null; // 점수판 리스너
+    let unsubGame=null, unsubList=null, unsubPlayers=null, unsubResp=null;
 
     /* ───────── 템플릿(로컬 저장) ───────── */
     const TPL_KEY = 'q_templates_v1';
@@ -210,7 +192,7 @@
       const exist = await dstQ.get();
       if (!exist.empty) {
         let b = db.batch(); let n=0;
-        exist.forEach(d=>{ b.delete(dstQ.doc(d.id)); n++; if(n%400===0){ b.commit(); b=db.batch(); } });
+        exist.forEach(d=>{ b.delete(dstQ.doc(d.id)); n++; if(n%400===0){ b.commit(); b=b=db.batch(); } });
         await b.commit();
       }
 
@@ -229,7 +211,7 @@
 
       // 3) 총 문항/상태 초기화
       await db.collection('q_games').doc(destId).set({
-        totalQuestions: snap.size, status:'waiting', currentIndex:-1, questionStartAt: null
+        totalQuestions: snap.size, status:'waiting', currentIndex:-1, questionStartAt: null, selfPaced:true
       }, {merge:true});
 
       return snap.size;
@@ -249,6 +231,7 @@
         await batch.commit();
       }catch(e){ console.warn('응답 정리 실패(무시):', e?.message||e); }
     }
+
     async function resetPlayerScores(gameId){
       try{
         const col = db.collection('q_games').doc(gameId).collection('q_players');
@@ -256,115 +239,31 @@
         if (snap.empty) return;
         let batch = db.batch(), n=0;
         snap.forEach(doc=>{
-          batch.set(col.doc(doc.id), { scoreTotal: 0 }, { merge:true });
+          batch.set(col.doc(doc.id), { scoreTotal: 0, progressIndex: 0, finished:false }, { merge:true });
           n++; if (n%400===0){ batch.commit(); batch = db.batch(); }
         });
         await batch.commit();
       }catch(e){ console.warn('점수 초기화 실패(무시):', e?.message||e); }
     }
 
-    /* ───────── 자동진행 ───────── */
-    let autoMode = false;
-    let limitSec = 75;
-    let autoTick = null, respUnsubAuto = null, playerUnsubAuto = null;
-    let playersCnt = 0;
-    let autoFired = false;
-
-    function killAutoWatchers(){
-      autoFired = false;
-      if (autoTick){ clearInterval(autoTick); autoTick = null; }
-      if (respUnsubAuto){ respUnsubAuto(); respUnsubAuto = null; }
-      if (playerUnsubAuto){ playerUnsubAuto(); playerUnsubAuto = null; }
-      // UI 초기화
-      $('#gonline').textContent = '0';
-      $('#gresp').textContent = '0';
-    }
-
-    async function goNextFromAuto(idx){
-      const gref = db.collection('q_games').doc(gameId);
-      const g = (await gref.get()).data();
-      if (!g || g.status!=='running' || g.currentIndex !== idx) return;
-
-      const total = Number(g.totalQuestions || 0);
-      const next  = idx + 1;
-      if (next >= total) {
-        await gref.set({ status: 'ended' }, {merge:true});
-      } else {
-        await gref.set({
-          currentIndex: next,
-          questionStartAt: firebase.firestore.FieldValue.serverTimestamp()
-        }, {merge:true});
-      }
-    }
-
-    function setupAutoForQuestion(g){
-      killAutoWatchers();
-      if (!autoMode || !gameId || g.status!=='running') return;
-
-      const idx = Number(g.currentIndex || 0);
-      autoFired = false;
-
-      // 1) 현재 '온라인' 인원: active=true 또는 최근 40초 내 하트비트가 있는 학생만
-      playerUnsubAuto = db.collection('q_games').doc(gameId)
+    /* ───────── 플레이어 상태(온라인/완료) 카운트 ───────── */
+    function bindPlayerPresence(){
+      if (unsubPlayers) unsubPlayers();
+      const cutoffMs = 40000; // 40초 내 하트비트면 온라인
+      unsubPlayers = db.collection('q_games').doc(gameId)
         .collection('q_players')
         .onSnapshot(s=>{
-          let activeCount = 0;
+          let online=0, finished=0;
           const now = Date.now();
           s.forEach(d=>{
             const p = d.data() || {};
-            const last = p.lastSeenAt && p.lastSeenAt.toMillis ? p.lastSeenAt.toMillis() : 0;
-            if (p.active === true || (last && (now - last) < 40000)) activeCount++;
+            const last = p.lastSeenAt?.toMillis?.() ?? 0;
+            if (p.active === true || (last && (now-last) < cutoffMs)) online++;
+            if (p.finished === true) finished++;
           });
-          playersCnt = activeCount;
-          $('#gonline').textContent = String(playersCnt);
+          $('#gonline').textContent = String(online);
+          $('#gfinished').textContent = String(finished);
         });
-
-      // 2) 현재 문항의 제출 집계: '시작 이후' + '제출 완료'만 인정
-      respUnsubAuto = db.collection('q_games').doc(gameId)
-        .collection('q_responses').where('order','==', idx)
-        .onSnapshot(s=>{
-          const responded = new Set();
-          const startMs = g.questionStartAt && g.questionStartAt.toMillis
-            ? g.questionStartAt.toMillis()
-            : 0;
-
-          s.forEach(d=>{
-            const r = d.data(); if (!r) return;
-
-            // 학생이 기록하는 제출시각(선호) → 없으면 answeredAt → createdAt
-            const subMs =
-              (r.submittedAt && r.submittedAt.toMillis ? r.submittedAt.toMillis() : 0) ||
-              (r.answeredAt   && r.answeredAt.toMillis   ? r.answeredAt.toMillis()   : 0) ||
-              (r.createdAt    && r.createdAt.toMillis    ? r.createdAt.toMillis()    : 0);
-
-            const isAfterStart = startMs ? (subMs >= startMs - 500) : true;
-            const submittedFlag = r.submitted === true || !!subMs;
-            const hasPlayer = !!r.playerId;
-
-            if (isAfterStart && submittedFlag && hasPlayer) {
-              responded.add(r.playerId);
-            }
-          });
-
-          $('#gresp').textContent = String(responded.size);
-
-          if (!autoFired && playersCnt > 0 && responded.size >= playersCnt) {
-            autoFired = true;
-            setTimeout(()=> goNextFromAuto(idx), 1200);
-          }
-        });
-
-      // 3) 시간 초과(교사 제한)
-      const startAt = g.questionStartAt && g.questionStartAt.toMillis
-            ? g.questionStartAt.toMillis() : Date.now();
-      autoTick = setInterval(()=>{
-        if (autoFired) return;
-        const elapsed = (Date.now() - startAt) / 1000;
-        if (elapsed >= limitSec) {
-          autoFired = true;
-          goNextFromAuto(idx);
-        }
-      }, 500);
     }
 
     /* ───────── 점수판 바인딩 ───────── */
@@ -374,16 +273,7 @@
 
       const gref = db.collection('q_games').doc(gameId);
 
-      // 진행표시 x/y (실시간은 아래 unsubGame에서 함께 갱신)
-      gref.get().then(s=>{
-        const g = s.data() || {};
-        const total = g.totalQuestions || 0;
-        const idx   = (typeof g.currentIndex === 'number') ? g.currentIndex : -1;
-        const human = (idx >= 0) ? (idx+1) : 0;
-        $('#sbProgress').textContent = total ? `${human}/${total}` : '-';
-      });
-
-      // 이름 맵
+      // 참가자 이름 맵
       const names = {};
       if (unsubPlayers) unsubPlayers();
       unsubPlayers = db.collection('q_games').doc(gameId)
@@ -395,7 +285,7 @@
           });
         });
 
-      // 응답 합산
+      // 응답 합산(개별진행이라 전체 응답을 누적)
       if (unsubResp) unsubResp();
       unsubResp = db.collection('q_games').doc(gameId)
         .collection('q_responses')
@@ -438,13 +328,6 @@
             $q.appendChild(tr);
           }
         });
-
-      // 수동 새로고침/점수 초기화
-      $('#btnRefreshScore').onclick = ()=> bindScoreboard();
-      $('#btnResetScores').onclick = async ()=>{
-        if (!confirm('모든 참가자의 누적 점수를 0으로 초기화할까요?')) return;
-        await resetPlayerScores(gameId);
-      };
     }
 
     /* ───────── 게임 UI 바인딩 ───────── */
@@ -456,38 +339,22 @@
       $('#editor').style.display='block';
       $('#list').style.display='block';
       $('#scoreboard').style.display='block';
-      $('#gonline').textContent = '0';
-      $('#gresp').textContent = '0';
       bindScoreboard();
+      bindPlayerPresence();
 
       if (unsubGame) unsubGame();
       unsubGame = db.collection('q_games').doc(gameId).onSnapshot(s=>{
         if(!s.exists) return;
         const g=s.data();
         const total = g.totalQuestions || 0;
-        const idx   = Number(g.currentIndex ?? -1);
 
-        // 표시: 1-기반 x/y
-        const human = (idx >= 0 && total > 0) ? `${idx+1}/${total}` : '-';
         $('#gstatus').textContent = g.status;
-        $('#gindex').textContent  = human;
         $('#gtotal').textContent  = total;
-        $('#sbProgress').textContent = human; // 점수판 진행도 동기화
 
         // 버튼 상태
         $('#btnStart').disabled = !(g.status==='waiting' && total>0);
-        $('#btnPrev').disabled  = !(g.status==='running' && idx>0);
-        $('#btnNext').disabled  = !(g.status==='running' && idx < total-1);
         $('#btnEnd').disabled   = !(g.status==='running');
         $('#btnReset').disabled = (g.status==='waiting');
-
-        // 자동진행 동기화
-        autoMode = !!g.auto;
-        $('#btnAuto').textContent = '자동진행: ' + (autoMode ? 'ON' : 'OFF');
-        limitSec = clamp(g.autoLimitSec ?? limitSec, 5, 600);
-        $('#autoSec').value = limitSec;
-
-        setupAutoForQuestion(g);
       });
 
       if (unsubList) unsubList();
@@ -523,7 +390,8 @@
         status:'waiting', createdBy:user.uid,
         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
         currentIndex:-1, totalQuestions:0,
-        auto:false, autoLimitSec: limitSec, questionStartAt: null
+        selfPaced:true,                    // ← 기본값: 개별진행
+        questionStartAt: null
       };
       await db.collection('q_games').doc(gameId).set(gameDoc,{merge:true});
       localStorage.setItem('q_gameId', gameId);
@@ -534,80 +402,44 @@
     $('#btnCopy').addEventListener('click', async ()=>{ try{ await navigator.clipboard.writeText(gameId); alert('게임 ID 복사됨'); }catch{ alert('복사 실패'); } });
     $('#btnSignOut').addEventListener('click', async ()=>{ await auth.signOut(); location.replace('./teacher-login.html'); });
 
-    // 시작: 지난 응답 제거 후 시작
+    // 시작: 지난 응답 제거 후 시작 + 모든 참가자 진행도 0/미완료로 초기화
     $('#btnStart').addEventListener('click', async ()=>{
       if(!gameId) return;
       const gref = db.collection('q_games').doc(gameId);
-      killAutoWatchers();
       await clearResponses(gameId);
+
+      // 진행도 초기화(현재 존재하는 플레이어들)
+      try{
+        const col = db.collection('q_games').doc(gameId).collection('q_players');
+        const snap = await col.get();
+        let b = db.batch(), n=0;
+        snap.forEach(d=>{
+          b.set(col.doc(d.id), { progressIndex: 0, finished:false }, { merge:true });
+          n++; if(n%400===0){ b.commit(); b=db.batch(); }
+        });
+        await b.commit();
+      }catch(e){ console.warn('플레이어 진행도 초기화 실패(무시):', e?.message||e); }
+
       await gref.set({
         status:'running',
-        currentIndex:0,
-        questionStartAt: firebase.firestore.FieldValue.serverTimestamp()
+        selfPaced:true,
+        currentIndex:-1,                  // 동기진행 X
+        questionStartAt: null
       }, {merge:true});
     });
 
-    $('#btnPrev').addEventListener('click', async ()=>{
-      if(!gameId) return;
-      const gref = db.collection('q_games').doc(gameId);
-      const g=(await gref.get()).data(); const idx=Number(g.currentIndex??0);
-      if (idx<=0) return;
-      killAutoWatchers();
-      await gref.set({
-        currentIndex: idx-1,
-        questionStartAt: firebase.firestore.FieldValue.serverTimestamp()
-      }, {merge:true});
-    });
-
-    $('#btnNext').addEventListener('click', async ()=>{
-      if(!gameId) return;
-      const gref = db.collection('q_games').doc(gameId);
-      const g=(await gref.get()).data();
-      const total = Number(g.totalQuestions||0);
-      const next  = Number(g.currentIndex||0) + 1;
-      killAutoWatchers();
-      if (next >= total) {
-        await gref.set({ status:'ended' }, {merge:true});
-        alert('마지막 문제까지 완료되어 게임을 종료했습니다.');
-      } else {
-        await gref.set({
-          currentIndex: next,
-          questionStartAt: firebase.firestore.FieldValue.serverTimestamp()
-        }, {merge:true});
-      }
-    });
-
-    // 초기화(대기): 응답도 함께 비움
+    // 초기화(대기): 응답 비움 + 상태 대기
     $('#btnReset').addEventListener('click', async ()=>{
-      if(!confirm('게임을 대기 상태로 초기화할까요? (현재 진행 위치가 초기화됩니다)')) return;
-      killAutoWatchers();
+      if(!confirm('게임을 대기 상태로 초기화할까요? (현재 진행 상황과 응답이 초기화됩니다)')) return;
       await clearResponses(gameId);
+      await resetPlayerScores(gameId); // scoreTotal/진행도 리셋
       await db.collection('q_games').doc(gameId).set({
-        status:'waiting', currentIndex:-1, questionStartAt: null
+        status:'waiting', currentIndex:-1, questionStartAt: null, selfPaced:true
       }, {merge:true});
     });
 
     $('#btnEnd').addEventListener('click', async ()=>{
-      killAutoWatchers();
       await db.collection('q_games').doc(gameId).set({ status:'ended' }, {merge:true});
-    });
-
-    // 자동진행 토글
-    document.getElementById('btnAuto').addEventListener('click', async ()=>{
-      autoMode = !autoMode;
-      document.getElementById('btnAuto').textContent = '자동진행: ' + (autoMode ? 'ON' : 'OFF');
-      if (gameId) await db.collection('q_games').doc(gameId).set({ auto: autoMode }, {merge:true});
-      const g = (await db.collection('q_games').doc(gameId).get()).data();
-      if (g) setupAutoForQuestion(g);
-    });
-
-    // 제한(초) 저장
-    document.getElementById('btnSaveAuto').addEventListener('click', async ()=>{
-      limitSec = clamp(Number(document.getElementById('autoSec').value||limitSec), 5, 600);
-      document.getElementById('autoSec').value = limitSec;
-      if (gameId) await db.collection('q_games').doc(gameId).set({ autoLimitSec: limitSec }, {merge:true});
-      const g = (await db.collection('q_games').doc(gameId).get()).data();
-      if (g) setupAutoForQuestion(g);
     });
 
     /* ───────── 문제 에디터 ───────── */
@@ -622,15 +454,17 @@
       }
     }
     renderChoiceInputs(4);
-    $('#qcount').addEventListener('change', e=> renderChoiceInputs(Number(e.target.value)));
-    $('#qtype').addEventListener('change', e=>{
+    document.getElementById('qcount').addEventListener('change', e=> renderChoiceInputs(Number(e.target.value)));
+    document.getElementById('qtype').addEventListener('change', e=>{
       const type=e.target.value;
-      $('#qcount').disabled = (type!=='mcq');
-      $('#choices').style.display = (type==='mcq') ? 'block' : 'none';
+      document.getElementById('qcount').disabled = (type!=='mcq');
+      document.getElementById('choices').style.display = (type==='mcq') ? 'block' : 'none';
     });
-    $('#btnAdd').addEventListener('click', async ()=>{
+    document.getElementById('btnAdd').addEventListener('click', async ()=>{
       if(!gameId) return alert('먼저 게임을 만드세요.');
-      const type=$('#qtype').value, prompt=$('#qprompt').value.trim(), answer=$('#qanswer').value.trim();
+      const type=document.getElementById('qtype').value,
+            prompt=document.getElementById('qprompt').value.trim(),
+            answer=document.getElementById('qanswer').value.trim();
       if(!prompt || !answer) return alert('문제와 정답을 입력하세요.');
       let choices=null;
       if(type==='mcq'){
@@ -642,24 +476,27 @@
       await db.collection('q_games').doc(gameId).collection('q_questions').add({
         type,prompt,choices,answer,order, createdAt: firebase.firestore.FieldValue.serverTimestamp()
       });
-      $('#qprompt').value=''; $('#qanswer').value=''; $choices().forEach(i=>i.value='');
+      document.getElementById('qprompt').value='';
+      document.getElementById('qanswer').value='';
+      $choices().forEach(i=>i.value='');
     });
 
     /* ───────── 템플릿 UI/행동 ───────── */
-    $('#btnTplAdd').addEventListener('click', ()=>{
-      const id=$('#tplId').value.trim(); const title=$('#tplTitle').value.trim();
+    document.getElementById('btnTplAdd').addEventListener('click', ()=>{
+      const id=document.getElementById('tplId').value.trim();
+      const title=document.getElementById('tplTitle').value.trim();
       if(!id || !title){ alert('ID와 표시 이름을 입력하세요.'); return; }
       const list=loadTpls();
       if(list.some(t=>t.id===id)){ alert('이미 저장된 ID입니다.'); return; }
       list.push({id, title}); saveTpls(list);
-      $('#tplId').value=''; $('#tplTitle').value='';
+      document.getElementById('tplId').value=''; document.getElementById('tplTitle').value='';
     });
-    $('#btnTplDel').addEventListener('click', ()=>{
-      const id=$('#tplSelect').value; if(!id){ alert('삭제할 템플릿을 선택하세요.'); return; }
+    document.getElementById('btnTplDel').addEventListener('click', ()=>{
+      const id=document.getElementById('tplSelect').value; if(!id){ alert('삭제할 템플릿을 선택하세요.'); return; }
       const list=loadTpls().filter(t=>t.id!==id); saveTpls(list);
     });
-    $('#btnTplUse').addEventListener('click', async ()=>{
-      const id=$('#tplSelect').value; if(!id){ alert('템플릿을 선택하세요.'); return; }
+    document.getElementById('btnTplUse').addEventListener('click', async ()=>{
+      const id=document.getElementById('tplSelect').value; if(!id){ alert('템플릿을 선택하세요.'); return; }
       if(!gameId){ alert('먼저 게임을 만드세요.'); return; }
       if(!confirm('현재 게임의 문제를 모두 지우고 템플릿에서 복사합니다. 계속할까요?')) return;
       try{
@@ -667,8 +504,8 @@
         alert(`복사 완료! (${n}문항)`);
       }catch(e){ alert('복사 실패: '+e.message); console.error(e); }
     });
-    $('#btnTplImport').addEventListener('click', async ()=>{
-      const id=$('#tplId').value.trim(); if(!id){ alert('원본 게임 ID를 입력하세요.'); return; }
+    document.getElementById('btnTplImport').addEventListener('click', async ()=>{
+      const id=document.getElementById('tplId').value.trim(); if(!id){ alert('원본 게임 ID를 입력하세요.'); return; }
       if(!gameId){ alert('먼저 게임을 만드세요.'); return; }
       if(!confirm('현재 게임의 문제를 모두 지우고 복사합니다. 계속할까요?')) return;
       try{
@@ -676,9 +513,9 @@
         alert(`복사 완료! (${n}문항)`);
       }catch(e){ alert('복사 실패: '+e.message); console.error(e); }
     });
-    $('#tplSelect').addEventListener('change', async ()=>{
-      const id=$('#tplSelect').value; if(!id){ $('#tplInfo').textContent='미리보기: -문항'; return; }
-      const n = await previewTplCount(id); $('#tplInfo').textContent = `미리보기: ${n ?? '?'}문항`;
+    document.getElementById('tplSelect').addEventListener('change', async ()=>{
+      const id=document.getElementById('tplSelect').value; if(!id){ document.getElementById('tplInfo').textContent='미리보기: -문항'; return; }
+      const n = await previewTplCount(id); document.getElementById('tplInfo').textContent = `미리보기: ${n ?? '?'}문항`;
     });
 
     // 초기 바인딩
