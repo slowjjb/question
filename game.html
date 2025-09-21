@@ -118,6 +118,7 @@
 
   let lastGameStatus = '';
   let allowServerDecrease = false;
+  let isRunning = false; // ★ 변경: running 상태 플래그
 
   const TIMEOUT_SEC = 50;      // 50초 자동제출
   const AUTO_ADVANCE_MS = 0;   // 자동넘김 비활성(“다음으로” 눌러 이동)
@@ -198,7 +199,8 @@
 
       if(meFinished){ show('#view-end'); stopTimer(); return; }
 
-      if (renderedIndex !== myIndex){
+      // ★ 변경: running 상태에서만 문제 렌더
+      if (isRunning && (renderedIndex !== myIndex)){
         renderQuestion(myIndex);
       }
     });
@@ -215,6 +217,8 @@
       const g=snap.data();
       const status = g.status || '-';
       $('#gstatus').textContent = status;
+
+      isRunning = (status === 'running'); // ★ 변경: 상태 플래그 갱신
 
       totalQ = Number(g.totalQuestions || 0);
       if (totalQ>0) $('#gindex').textContent = `${Math.min(myIndex+1,totalQ)}/${totalQ}`;
@@ -236,7 +240,8 @@
       if(status==='ended'){ show('#view-end'); stopTimer(); return; }
 
       if(!meFinished){
-        if (renderedIndex !== myIndex) renderQuestion(myIndex);
+        // ★ 변경: running일 때만 렌더 시도
+        if (isRunning && renderedIndex !== myIndex) renderQuestion(myIndex);
       }
     });
   }
@@ -245,6 +250,9 @@
   let currentQ=null, currentQid=null;
   async function renderQuestion(order){
     try{
+      // ★ 변경: 안전 가드 — running 아닐 때는 강제로 대기로
+      if (!isRunning) { show('#view-wait'); return; }
+
       if (order < 0) order = 0;
 
       if (totalQ > 0 && order >= totalQ){
@@ -257,6 +265,7 @@
       submitted=false;
       $('#after-msg').style.display='none';
       $('#btnNext').style.display='none';
+      $('#btnNext').disabled = true; // 다음 버튼 기본 비활성화
 
       const qSnap = await questionsCol().where('order','==', Number(order)).limit(1).get();
       if(qSnap.empty){
@@ -324,6 +333,7 @@
   $('#btnSubmit').addEventListener('click', ()=> doSubmit(false));
   $('#btnNext').addEventListener('click', ()=>{
     if (meFinished) return;
+    // 최소 지연 후 활성화되므로 여기선 그대로 렌더
     renderQuestion(myIndexLocal);
   });
 
@@ -394,8 +404,10 @@
       myIndexLocal = Math.max(myIndexLocal, renderedIndex + 1);
       myIndex = myIndexLocal;
 
-      // 다음으로 버튼 표시
+      // ★ 변경: 다음으로 버튼을 2초간 비활성화하여 최소 체류시간 확보
       $('#btnNext').style.display = 'inline-block';
+      $('#btnNext').disabled = true;
+      setTimeout(()=>{ $('#btnNext').disabled = false; }, 2000); // 2초 대기
 
       if (AUTO_ADVANCE_MS > 0) {
         setTimeout(()=>{ if (!meFinished) renderQuestion(myIndexLocal); }, AUTO_ADVANCE_MS);
@@ -406,6 +418,8 @@
         $('#after-msg').textContent = '이미 제출된 문항입니다. 다음으로 이동하세요.';
         $('#after-msg').style.display='block';
         $('#btnNext').style.display = 'inline-block';
+        $('#btnNext').disabled = true;
+        setTimeout(()=>{ $('#btnNext').disabled = false; }, 2000); // 동일 정책 적용
       } else if (/permission-denied/i.test(String(e?.message||''))) {
         alert('제출 실패: 권한 오류(규칙). Firestore 규칙 게시 여부를 확인하세요.');
         submitted = false;
